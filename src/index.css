@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  body {
+    @apply bg-slate-950 text-slate-200;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-lg border border-slate-800 bg-slate-900/60 p-4;
+  }
+  .card-title {
+    @apply mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400;
+  }
+  .stat-value {
+    @apply text-2xl font-semibold text-slate-100;
+  }
+  .stat-label {
+    @apply text-xs uppercase tracking-wide text-slate-500;
+  }
+  .btn {
+    @apply rounded-md px-4 py-2 text-sm font-medium transition-colors;
+  }
+  .btn-primary {
+    @apply btn bg-sky-600 text-white hover:bg-sky-500 disabled:bg-slate-700 disabled:text-slate-500;
+  }
+  .chip {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .table-cell {
+    @apply whitespace-nowrap px-3 py-2 text-left text-sm;
+  }
+}
