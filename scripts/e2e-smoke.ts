@@ -11,17 +11,7 @@ const CSV = process.argv[2] ?? 'public/sample.csv';
 const BASE = process.argv[3] ?? 'http://localhost:5173/';
 const SHOTS = 'docs/screenshots';
 
-const TABS = [
-  'Tổng quan',
-  'Action Board',
-  'Kênh',
-  'Creative',
-  'Geo',
-  'Firmographic',
-  'Brand',
-  'Xu hướng',
-  'Lead Explorer',
-];
+const TABS = ['Tổng quan', 'Thu hút', 'Chất lượng', 'Leads'];
 
 /** ASCII slug — tab labels are Vietnamese, which breaks on Windows/CI filesystems. */
 function slug(label: string): string {
@@ -64,8 +54,8 @@ async function main() {
 
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#root', { timeout: 30_000 });
-  await page.getByText('Lead Quality Dashboard').waitFor({ timeout: 30_000 });
-  check(await page.getByText('Lead Quality Dashboard').isVisible(), 'app shell renders');
+  await page.getByText('QH Distribution').waitFor({ timeout: 30_000 });
+  check(await page.getByText('QH Distribution').first().isVisible(), 'app shell renders');
 
   // Upload the CSV through the real file input.
   await page.setInputFiles('input[type=file]', CSV);
@@ -107,7 +97,7 @@ async function main() {
     const text = await page.locator('body').innerText();
     check(text.includes(label), `tab "${label}" renders`);
     check(
-      !text.includes('Chưa đủ dữ liệu để xếp hạng') || label !== 'Action Board',
+      !text.includes('Hãy nạp CSV lớn hơn') || label !== 'Tổng quan',
       `tab "${label}" has content`,
     );
     await page.screenshot({ path: `${SHOTS}/${String(i + 2).padStart(2, '0')}-${slug(label)}.png`, fullPage: true });

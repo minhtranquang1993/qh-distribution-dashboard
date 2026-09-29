@@ -50,13 +50,13 @@ async function main() {
 
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#root', { timeout: 30_000 });
-  await page.getByText('Lead Quality Dashboard').waitFor({ timeout: 30_000 });
+  await page.getByText('QH Distribution').first().waitFor({ timeout: 30_000 });
 
   await page.setInputFiles('input[type=file]', SAMPLE);
   await page.waitForFunction(() => document.body.innerText.includes('Đã nạp'), { timeout: 180_000 });
 
   // Every tab is rendered and read, so a leak in any module is caught.
-  const tabs = ['Tổng quan', 'Action Board', 'Kênh', 'Creative', 'Geo', 'Firmographic', 'Brand', 'Xu hướng', 'Lead Explorer'];
+  const tabs = ['Tổng quan', 'Thu hút', 'Chất lượng', 'Leads'];
   const collectedText: string[] = [];
   for (const label of tabs) {
     await page.getByRole('button', { name: label, exact: true }).click();
@@ -73,43 +73,46 @@ async function main() {
   for (const phone of pii.phones) if (rendered.includes(phone)) leakedPhones += 1;
   check(leakedPhones === 0, `no phone appears in any rendered tab (found ${leakedPhones})`);
 
-  // The Explorer column header is the visible signal for which build mode is live.
-  const explorerHasPiiColumns = await page.getByText('Tên / Email', { exact: false }).count();
-  check(explorerHasPiiColumns === 0, 'production Explorer shows no name/email column');
+  // Production = vite build (import.meta.env.PROD true → worker strips PII).
+  // Script này chạy trên preview server của bản build nên PII phải vắng mặt tuyệt đối.
+  const leadsHasPiiColumns = await page.getByText('Tên / Email', { exact: false }).count();
+  check(leadsHasPiiColumns === 0, 'production Leads table shows no name/email column');
 
-  // leadKey must be a salted digest, not a contact value.
-  const leadIds = await page.locator('table td.font-mono').allInnerTexts();
-  check(leadIds.length > 0, `production Explorer renders hashed lead ids (${leadIds.length} found)`);
-  const allHashed = leadIds.every((id) => /^lk1:[0-9a-f]{24}$/.test(id.trim()));
-  check(allHashed, 'every rendered lead id matches lk1:<24 hex> (no email/phone prefix)');
+  // leadKey trong export phải là salted digest (lk1:<24 hex>), không phải contact value.
+  // LeadsModule mới không render cột lead id — verify qua export CSV.
+  async function exportCsv(): Promise<string> {
+    const exportPromise = page.waitForEvent('download', { timeout: 15_000 }).catch(() => null);
+    await page.getByRole('button', { name: /Export .* dòng/ }).click();
+    const download = await exportPromise;
+    if (!download) return '';
+    const path = await download.path();
+    return path ? readFileSync(path, 'utf-8') : '';
+  }
 
-  // Re-upload the same file and confirm the ids change. A per-parse salt is what
-  // makes an exported id useless off this machine; without it, anyone holding a
-  // candidate contact list can hash their way to the real identity. Keys must
-  // still be stable *within* one parse, or dedupe would break.
+  const csv1 = await exportCsv();
+  check(csv1.length > 0, 'export produced a download');
+  check(!pii.emails.some((e) => csv1.includes(e)), 'exported CSV contains no email');
+  check(!pii.phones.some((p) => csv1.includes(p)), 'exported CSV contains no phone');
+  const keys1 = csv1.split('\n').slice(1).filter(Boolean).map((line) => line.split(',')[2] ?? '');
+  check(keys1.length > 0, `export carries leadKey column (${keys1.length} rows)`);
+  check(
+    keys1.every((k) => /^"?lk1:[0-9a-f]{24}"?$/.test(k.trim())),
+    'every exported leadKey matches lk1:<24 hex>',
+  );
+
+  // Re-upload và confirm ids đổi (per-parse salt). Nút export nằm ở tab Leads.
   await page.getByRole('button', { name: 'Nạp file khác' }).click();
   await page.waitForSelector('input[type=file]', { state: 'attached' });
   await page.setInputFiles('input[type=file]', SAMPLE);
   await page.waitForFunction(() => document.body.innerText.includes('Đã nạp'), { timeout: 180_000 });
-  await page.getByRole('button', { name: 'Lead Explorer', exact: true }).click();
+  await page.getByRole('button', { name: 'Leads', exact: true }).click();
   await page.waitForTimeout(500);
-  const reloadIds = (await page.locator('table td.font-mono').allInnerTexts()).map((id) => id.trim());
-  check(reloadIds.length > 0, `re-upload renders a fresh id set (${reloadIds.length} found)`);
-  const reused = reloadIds.filter((id) => leadIds.map((t) => t.trim()).includes(id)).length;
-  check(reused === 0, `lead ids are re-salted per upload (${reused} of ${reloadIds.length} reused)`);
-
-  // The export path is the other way PII escapes a browser-only build.
-  const exportPromise = page.waitForEvent('download', { timeout: 15_000 }).catch(() => null);
-  await page.getByRole('button', { name: /Export .* dòng/ }).click();
-  const download = await exportPromise;
-  if (download) {
-    const path = await download.path();
-    const csv = path ? readFileSync(path, 'utf-8') : '';
-    check(!pii.emails.some((e) => csv.includes(e)), 'exported CSV contains no email');
-    check(!pii.phones.some((p) => csv.includes(p)), 'exported CSV contains no phone');
-  } else {
-    check(false, 'export produced a download');
-  }
+  const csv2 = await exportCsv();
+  const keys2 = new Set(
+    csv2.split('\n').slice(1).filter(Boolean).map((line) => line.split(',')[2]?.trim() ?? ''),
+  );
+  const reused = keys1.filter((k) => keys2.has(k.trim())).length;
+  check(reused === 0, `lead ids are re-salted per upload (${reused} of ${keys1.length} reused)`);
 
   await browser.close();
 
