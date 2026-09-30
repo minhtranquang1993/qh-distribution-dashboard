@@ -26,12 +26,21 @@ function functionUrl(): string | null {
   return `${url.replace(/\/$/, '')}/functions/v1/ingest-leads`;
 }
 
+function anonKey(): string | undefined {
+  return import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+}
+
 async function call(action: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   const url = functionUrl();
   if (!url) throw new Error('Supabase chưa cấu hình');
+  // Gửi kèm anon key: function bật Verify JWT thì bắt buộc, tắt thì thừa vô hại.
+  const anon = anonKey();
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(anon ? { apikey: anon, Authorization: `Bearer ${anon}` } : {}),
+    },
     body: JSON.stringify({ action, ...body }),
   });
   if (!res.ok) throw new Error(`Lưu DB thất bại (${res.status})`);
