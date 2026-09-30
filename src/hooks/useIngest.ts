@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Lead, ParseProgress } from '@/types/lead';
-import type { ParseRequest, ParseResponse } from '@/workers/messages';
+import type { ParseRequest, ParseResponse, RawPassthrough } from '@/workers/messages';
 
 /** Set by Vite at build time; the production deploy compiles this to true. */
 export const IS_PRODUCTION_BUILD = import.meta.env.PROD;
@@ -14,6 +14,8 @@ export interface IngestState {
   status: 'idle' | 'parsing' | 'ready' | 'error';
   progress: ParseProgress | null;
   leads: Lead[];
+  /** Raw passthrough song song với leads (cùng thứ tự), để ghi DB. */
+  raw: RawPassthrough[];
   totalRows: number;
   warnings: string[];
   error: string | null;
@@ -26,6 +28,7 @@ const INITIAL: IngestState = {
   status: 'idle',
   progress: null,
   leads: [],
+  raw: [],
   totalRows: 0,
   warnings: [],
   error: null,
@@ -52,6 +55,7 @@ export function useIngest() {
           ...prev,
           status: 'ready',
           leads: msg.payload.leads,
+          raw: msg.payload.raw,
           totalRows: msg.payload.totalRows,
           warnings: msg.payload.warnings,
           progress: { stage: 'done', rowsProcessed: msg.payload.totalRows, totalRows: msg.payload.totalRows },

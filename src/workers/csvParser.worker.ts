@@ -7,7 +7,7 @@
 import Papa from 'papaparse';
 import type { RawRow } from '@/types/raw';
 import { transformRows } from '@/lib/transform';
-import type { ParseRequest, ParseResponse } from '@/workers/messages';
+import type { ParseRequest, ParseResponse, RawPassthrough } from '@/workers/messages';
 
 const ctx = self as unknown as Worker;
 
@@ -44,7 +44,33 @@ ctx.onmessage = (event: MessageEvent<ParseRequest>) => {
           payload: { stage: 'scoring', rowsProcessed: collected.length, totalRows: collected.length },
         });
         const { leads, totalRows, warnings } = await transformRows(collected, { noPii });
-        post({ type: 'done', payload: { leads, totalRows, warnings } });
+        // Giữ 10 cột raw cần cho DB (không recaptcha). Chỉ dòng có
+        // submission_id mới đi tiếp, khớp semantics transformRows.
+        // Bản production (noPii): blank cột PII thô trước khi gửi —
+        // nếu không PII sẽ rò qua Edge Function dù leads đã strip.
+        const raw: RawPassthrough[] = [];
+        for (const row of collected) {
+          if (!(row.submission_id ?? '').trim()) continue;
+          raw.push({
+            URL: row.URL,
+            first_source_url: row.first_source_url,
+            Company: noPii ? '' : row.Company,
+            Name: noPii ? '' : row.Name,
+            Email: noPii ? '' : row.Email,
+            'calling-code': noPii ? '' : row['calling-code'],
+            Phone: noPii ? '' : row.Phone,
+            'your-type-of-business-or-the-website': noPii
+              ? ''
+              : row['your-type-of-business-or-the-website'],
+            'top-brands-you-are-looking-for': row['top-brands-you-are-looking-for'],
+            'estimated-monthly-amount-dollar-you-wish-to-buy-from-us':
+              row['estimated-monthly-amount-dollar-you-wish-to-buy-from-us'],
+            Week: row.Week,
+            Month: row.Month,
+            Day: row.Day,
+          });
+        }
+        post({ type: 'done', payload: { leads, totalRows, warnings, raw } });
       },
       error: (err) => {
         post({ type: 'error', payload: err.message ?? 'Failed to parse CSV' });

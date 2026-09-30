@@ -10,6 +10,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import Papa from 'papaparse';
 import { createClient } from '@supabase/supabase-js';
 import { transformRows } from '../src/lib/transform';
+import { sanitizeUrlQuery, sanitizeUtmSet } from '../src/lib/sanitizeUrlQuery';
 import type { RawRow } from '../src/types/raw';
 
 const csvPath = process.argv[2];
@@ -94,8 +95,8 @@ async function main() {
       seq,
       submission_id: lead.submissionId,
       submitted_at: lead.submittedAt,
-      raw_url: str(raw.URL),
-      raw_first_source_url: str(raw.first_source_url),
+      raw_url: sanitizeUrlQuery(str(raw.URL)),
+      raw_first_source_url: sanitizeUrlQuery(str(raw.first_source_url)),
       first_user_source: lead.firstUserSource,
       first_user_medium: lead.firstUserMedium,
       location: lead.location,
@@ -130,9 +131,9 @@ async function main() {
       lead_key_hash: lead.leadKey,
       contact_group: groupByKey.get(lead.leadKey)!,
       utm: {
-        submit: lead.submitUtm,
-        first_touch: lead.firstTouchUtm,
-        chosen: lead.chosenUtm,
+        submit: sanitizeUtmSet(lead.submitUtm),
+        first_touch: sanitizeUtmSet(lead.firstTouchUtm),
+        chosen: sanitizeUtmSet(lead.chosenUtm),
       },
     };
   });

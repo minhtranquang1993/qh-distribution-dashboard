@@ -18,6 +18,42 @@ chuẩn hóa → chấm điểm chạy trong Web Worker, giao diện không bị
 
 Repo có sẵn `public/sample.csv` (200 dòng, PII tổng hợp) để thử nhanh mà không cần file thật.
 
+## Lưu DB (Supabase)
+
+File CSV vừa nạp trên UI **tự lưu vào Supabase** qua Edge Function `ingest-leads`
+(service_role là biến built-in của function, anon key không ghi trực tiếp).
+Reload trang vẫn còn dữ liệu. Function enforce **no-PII server-side**: mọi cột
+PII trong DB luôn trống bất kể bản local hay public — muốn lưu PII phải dùng
+seed script local bên dưới. `raw_url` + `raw_first_source_url` chỉ giữ param
+UTM (bỏ param lạ, scrub email/SĐT trong value kể cả dạng encode) và cột `utm`
+JSON (cả 3 basis submit/first_touch/chosen) cũng scrub tương tự. Seed script
+dùng chung sanitizer nên batch seed mới sạch như upload qua UI.
+
+Deploy function 1 lần:
+
+```bash
+supabase link --project-ref xeitiijvywresnyjycpq
+supabase secrets set SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...
+supabase functions deploy ingest-leads
+```
+
+> LƯU Ý: function mở, không check secret (dashboard nội bộ).
+> Ai có URL function cũng ghi được DB.
+
+Seed thủ công 1 file (thêm batch mới, giữ batch cũ):
+
+```bash
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+  npx tsx scripts/import-to-supabase.ts <đường-dẫn-csv> [file-name]
+```
+
+Sanitize lại các batch đã seed trước khi có scrub UTM (`--dry-run` xem trước):
+
+```bash
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+  npx tsx scripts/remediate-public-pii.ts --dry-run
+```
+
 ## Lệnh khác
 
 | Lệnh | Việc |

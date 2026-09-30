@@ -106,6 +106,9 @@ export default function App() {
           error={data.ingest.state.error}
           fileName={data.ingest.state.fileName}
           onReset={data.ingest.reset}
+          saveStatus={data.saveStatus}
+          saveProgress={data.saveProgress}
+          saveError={data.saveError}
         />
 
         {data.ingest.state.warnings.length > 0 && (

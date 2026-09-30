@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react';
 import type { ParseProgress } from '@/types/lead';
 import { IS_PRODUCTION_BUILD } from '@/hooks/useIngest';
+import type { SaveStatus } from '@/hooks/useDataSource';
+import type { SaveProgress } from '@/lib/ingestApi';
 
 interface Props {
   onFile: (file: File) => void;
@@ -9,6 +11,9 @@ interface Props {
   error: string | null;
   fileName: string | null;
   onReset: () => void;
+  saveStatus: SaveStatus;
+  saveProgress: SaveProgress | null;
+  saveError: string | null;
 }
 
 const STAGE_LABEL: Record<ParseProgress['stage'], string> = {
@@ -18,7 +23,7 @@ const STAGE_LABEL: Record<ParseProgress['stage'], string> = {
   done: 'Xong',
 };
 
-export function UploadPanel({ onFile, status, progress, error, fileName, onReset }: Props) {
+export function UploadPanel({ onFile, status, progress, error, fileName, onReset, saveStatus, saveProgress, saveError }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -65,8 +70,8 @@ export function UploadPanel({ onFile, status, progress, error, fileName, onReset
           <p className="max-w-md text-xs text-slate-500">
             File được parse trong Web Worker nên giao diện không bị treo.
             {IS_PRODUCTION_BUILD
-              ? ' Bản public đã tắt hiển thị PII (email/SĐT/tên) để bảo vệ dữ liệu khách.'
-              : ' Bản local giữ PII để tra cứu nhanh; chạy bản local sẽ không gửi dữ liệu lên đâu.'}
+              ? ' Bản public đã tắt hiển thị PII (email/SĐT/tên) để bảo vệ dữ liệu khách. Upload qua UI chỉ lưu trường safe vào DB.'
+              : ' Bản local giữ PII để tra cứu nhanh trong bộ nhớ; file vừa nạp tự lưu DB nhưng chỉ trường safe (muốn lưu PII dùng seed script).'}
           </p>
         </div>
       )}
@@ -88,14 +93,27 @@ export function UploadPanel({ onFile, status, progress, error, fileName, onReset
       )}
 
       {status === 'ready' && (
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-slate-300">
-            Đã nạp <span className="font-semibold">{rows.toLocaleString('vi-VN')}</span> dòng từ{' '}
-            <span className="text-slate-400">{fileName}</span>
-          </p>
-          <button className="btn border border-slate-700 text-slate-300 hover:bg-slate-800" onClick={onReset}>
-            Nạp file khác
-          </button>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-slate-300">
+              Đã nạp <span className="font-semibold">{rows.toLocaleString('vi-VN')}</span> dòng từ{' '}
+              <span className="text-slate-400">{fileName}</span>
+            </p>
+            <button className="btn border border-slate-700 text-slate-300 hover:bg-slate-800" onClick={onReset}>
+              Nạp file khác
+            </button>
+          </div>
+          {saveStatus === 'saving' && (
+            <p className="text-xs text-sky-300">
+              Đang lưu DB… {(saveProgress?.saved ?? 0).toLocaleString('vi-VN')}/{(saveProgress?.total ?? 0).toLocaleString('vi-VN')} dòng
+            </p>
+          )}
+          {saveStatus === 'saved' && (
+            <p className="text-xs text-emerald-300">Đã lưu vào DB — reload trang vẫn còn dữ liệu.</p>
+          )}
+          {saveStatus === 'error' && (
+            <p className="text-xs text-rose-400">Lưu DB thất bại: {saveError} — dữ liệu vẫn phân tích được trong bộ nhớ.</p>
+          )}
         </div>
       )}
 

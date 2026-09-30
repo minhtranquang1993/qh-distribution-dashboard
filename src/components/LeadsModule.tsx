@@ -202,7 +202,7 @@ export function LeadsModule({
 
       {!IS_PRODUCTION_BUILD && newIds.size > 0 && (
         <p className="mb-3 rounded-md bg-sky-500/10 px-3 py-2 text-xs text-sky-300">
-          {newIds.size.toLocaleString('vi-VN')} dòng từ CSV chưa có trong DB (gắn cờ MỚI). Chạy seed script để lưu.
+          {newIds.size.toLocaleString('vi-VN')} dòng từ CSV chưa có trong DB (gắn cờ MỚI). Dữ liệu đang tự lưu qua Edge Function.
         </p>
       )}
 
