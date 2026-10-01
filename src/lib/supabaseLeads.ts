@@ -123,16 +123,21 @@ export function assignDuplicates(leads: Lead[]): Lead[] {
   });
 }
 
-const PAGE = 1000;
+const PAGE = 5000;
 
 /** Full-load leads_public (≤50k theo FIX-4) vào memory, ORDER BY seq ổn định.
  * seq = vị trí dòng trong file (import script ghi). Không sort TEXT theo
  * submission_id ('100000' < '68876') — nó đổi representative của contact group
- * và làm lệch tier (parity AC6). */
-export async function fetchSupabaseLeads(onProgress?: (loaded: number) => void): Promise<Lead[]> {
+ * và làm lệch tier (parity AC6).
+ * Stream từng page qua onProgress(loaded, leadsSoFar) để UI hiện ngay từ
+ * page đầu, phần còn lại load nền. */
+export async function fetchSupabaseLeads(
+  onProgress?: (loaded: number, leadsSoFar?: Lead[]) => void,
+): Promise<Lead[]> {
   const client = supabaseClient();
   if (!client) throw new Error('Supabase chưa cấu hình (thiếu VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)');
   const all: PublicLeadRow[] = [];
+  let leadsSoFar: Lead[] = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await client
       .from('leads_public')
@@ -142,10 +147,11 @@ export async function fetchSupabaseLeads(onProgress?: (loaded: number) => void):
     if (error) throw new Error(`Supabase read failed: ${error.message}`);
     if (!data || data.length === 0) break;
     all.push(...(data as PublicLeadRow[]));
-    onProgress?.(all.length);
+    // Dữ liệu giữ file-order (seq) nên earliest của mỗi contact_group đứng trước.
+    // Re-assign duplicates trên toàn bộ đã tải để page đầu hiện đúng ngay.
+    leadsSoFar = assignDuplicates(all.map(publicRowToLead));
+    onProgress?.(all.length, leadsSoFar);
     if (data.length < PAGE) break;
   }
-  const leads = all.map(publicRowToLead);
-  // Dữ liệu giữ file-order (seq) nên earliest của mỗi contact_group đứng trước.
-  return assignDuplicates(leads);
+  return leadsSoFar;
 }

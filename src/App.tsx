@@ -78,9 +78,11 @@ export default function App() {
         {data.supabaseConfigured ? (
           <div className="card flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm text-slate-300">
-              {data.dbStatus === 'loading' && `Đang tải Supabase… ${data.dbLoaded.toLocaleString('vi-VN')} dòng`}
-              {data.dbStatus === 'ready' &&
-                `Supabase: ${data.dbCount.toLocaleString('vi-VN')} dòng trong DB`}
+              {data.dbStatus === 'loading' && data.dbCount === 0 && `Đang tải Supabase… ${data.dbLoaded.toLocaleString('vi-VN')} dòng`}
+              {(data.dbStatus === 'ready' || (data.dbStatus === 'loading' && data.dbCount > 0)) &&
+                (data.dbLoadingMore
+                  ? `Supabase: ${data.dbCount.toLocaleString('vi-VN')} dòng — đang tải thêm…`
+                  : `Supabase: ${data.dbCount.toLocaleString('vi-VN')} dòng trong DB`)}
               {data.dbStatus === 'error' && <span className="text-rose-400">Supabase lỗi: {data.dbError}</span>}
               {data.dbStatus === 'unconfigured' && 'Supabase chưa cấu hình — dùng CSV bên dưới.'}
               {data.csvCount > 0 && (

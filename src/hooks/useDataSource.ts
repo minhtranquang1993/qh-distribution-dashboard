@@ -22,6 +22,7 @@ export function useDataSource() {
   const [dbStatus, setDbStatus] = useState<'idle' | 'loading' | 'ready' | 'error' | 'unconfigured'>('idle');
   const [dbError, setDbError] = useState<string | null>(null);
   const [dbLoaded, setDbLoaded] = useState(0);
+  const [dbLoadingMore, setDbLoadingMore] = useState(false);
   const [source, setSource] = useState<DataSource>('supabase');
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [saveProgress, setSaveProgress] = useState<SaveProgress | null>(null);
@@ -34,15 +35,31 @@ export function useDataSource() {
       setDbStatus('unconfigured');
       return;
     }
-    setDbStatus('loading');
+    setDbStatus((prev) => (prev === 'ready' ? prev : 'loading'));
+    setDbLoadingMore(true);
     setDbError(null);
     try {
-      const leads = await fetchSupabaseLeads(setDbLoaded);
+      const leads = await fetchSupabaseLeads((loaded, leadsSoFar) => {
+        setDbLoaded(loaded);
+        // Hiện dashboard ngay từ page đầu, các page sau cập nhật nền.
+        if (leadsSoFar && leadsSoFar.length > 0) {
+          setDbLeads(leadsSoFar);
+          setDbStatus('ready');
+        }
+      });
       setDbLeads(leads);
       setDbStatus('ready');
+      setDbLoadingMore(false);
     } catch (e) {
-      setDbError(e instanceof Error ? e.message : 'Không tải được Supabase');
-      setDbStatus('error');
+      setDbLoadingMore(false);
+      // Đã có dữ liệu partial thì giữ dashboard, không lật sang error.
+      setDbLeads((prev) => {
+        if (prev.length === 0) {
+          setDbError(e instanceof Error ? e.message : 'Không tải được Supabase');
+          setDbStatus('error');
+        }
+        return prev;
+      });
     }
   }, []);
 
@@ -120,6 +137,7 @@ export function useDataSource() {
     dbStatus,
     dbError,
     dbLoaded,
+    dbLoadingMore,
     dbCount: dbLeads.length,
     csvCount: csvLeads.length,
     saveStatus,
