@@ -1,6 +1,13 @@
 import type { Lead, LeadTier, UtmSet } from '@/types/lead';
 import { splitBrands } from '@/lib/normalize';
 import { supabaseClient } from '@/lib/supabase';
+import {
+  monthRangeFromAnchor,
+  rangeBounds,
+  type RangePreset,
+} from '@/lib/submittedAt';
+
+export type { RangePreset };
 
 /** Một dòng của view public.leads_public (không PII, không lead_key_hash). */
 export interface PublicLeadRow {
@@ -8,6 +15,8 @@ export interface PublicLeadRow {
   batch_id: string;
   submission_id: string;
   submitted_at: string;
+  /** Cột mới từ migration 003; bản DB cũ chưa chạy migration thì null. */
+  submitted_at_ts: string | null;
   raw_url: string;
   raw_first_source_url: string;
   first_user_source: string;
@@ -123,35 +132,159 @@ export function assignDuplicates(leads: Lead[]): Lead[] {
   });
 }
 
-const PAGE = 5000;
+const PAGE = 1000;
 
-/** Full-load leads_public (≤50k theo FIX-4) vào memory, ORDER BY seq ổn định.
+export interface RangeFetchResult {
+  rows: Lead[];
+  /** Tổng dòng server-side (count exact) — hiển thị header, KHÔNG phải rows.length. */
+  totalCount: number;
+  /** Số rows đã accumulate qua các page. */
+  loadedCount: number;
+  /** Preset hiệu lực (fallback về 'all' khi không anchor) — đúng contract Gate 2. */
+  rangePreset: RangePreset;
+  /** Số dòng không có ngày (submitted_at_ts null) — chỉ đếm khi lọc theo tháng. */
+  undatedCount: number;
+}
+
+/** Anchor mặc định: max submitted_at_ts qua leads_public (KHÔNG suy từ page đầu).
+ * Pre-migration (DB chưa có cột) thì trả null để fetch fallback về preset all. */
+export async function fetchRangeAnchor(): Promise<{ maxSubmittedAtTs: string | null }> {
+  const client = supabaseClient();
+  if (!client) throw new Error('Supabase chưa cấu hình (thiếu VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)');
+  const { data, error } = await client
+    .from('leads_public')
+    .select('submitted_at_ts')
+    .not('submitted_at_ts', 'is', null)
+    .order('submitted_at_ts', { ascending: false })
+    .limit(1);
+  if (error) {
+    if (/submitted_at_ts/i.test(error.message)) return { maxSubmittedAtTs: null };
+    throw new Error(`Supabase read failed: ${error.message}`);
+  }
+  const row = (data as Array<{ submitted_at_ts: string | null }> | null)?.[0];
+  return { maxSubmittedAtTs: row?.submitted_at_ts ?? null };
+}
+
+interface DateFilter {
+  gte: string;
+  lt: string;
+}
+
+function applyDateFilter<T>(
+  query: T,
+  filter: DateFilter | null,
+  gteFn: (q: T, col: string, v: string) => T,
+  ltFn: (q: T, col: string, v: string) => T,
+): T {
+  if (!filter) return query;
+  return ltFn(gteFn(query, 'submitted_at_ts', filter.gte), 'submitted_at_ts', filter.lt);
+}
+
+function resolveDateFilter(
+  monthFrom: string | null,
+  monthTo: string | null,
+  preset: RangePreset,
+  anchorIso: string | null,
+): DateFilter | null {
+  if (preset === 'all') return null;
+  if (monthFrom && monthTo) return rangeBounds(monthFrom, monthTo);
+  if (!anchorIso) return null;
+  const range = monthRangeFromAnchor(anchorIso, preset);
+  if (!range) return null;
+  return rangeBounds(range.monthFrom, range.monthTo);
+}
+
+/** Fetch leads theo time-range + paging server, ORDER BY seq ổn định.
  * seq = vị trí dòng trong file (import script ghi). Không sort TEXT theo
  * submission_id ('100000' < '68876') — nó đổi representative của contact group
  * và làm lệch tier (parity AC6).
- * Stream từng page qua onProgress(loaded, leadsSoFar) để UI hiện ngay từ
- * page đầu, phần còn lại load nền. */
+ * Dừng loop theo totalCount (count exact), KHÔNG dùng `data.length < PAGE`
+ * làm điều kiện duy nhất — PostgREST cap nhỏ hơn PAGE sẽ dừng sớm (bug 1000).
+ * Stream từng page qua onProgress(loaded, leadsSoFar, total) để UI hiện ngay
+ * từ page đầu, phần còn lại load nền. */
+export async function fetchLeadsByRange(
+  options: {
+    preset: RangePreset;
+    /** Cho phép preset custom khi FilterBar chọn tay; mặc định suy từ anchor. */
+    monthFrom?: string | null;
+    monthTo?: string | null;
+    anchorIso?: string | null;
+  },
+  onProgress?: (loaded: number, leadsSoFar: Lead[], total: number) => void,
+): Promise<RangeFetchResult> {
+  const { preset } = options;
+  const client = supabaseClient();
+  if (!client) throw new Error('Supabase chưa cấu hình (thiếu VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)');
+  const anchorIso = options.anchorIso ?? (await fetchRangeAnchor()).maxSubmittedAtTs;
+  // Pre-migration (hoặc DB toàn dòng không ngày): không anchor thì không lọc
+  // server được (WHERE cột chưa tồn tại sẽ lỗi). Fallback về preset all để
+  // dashboard vẫn chạy — rangeLabel ở useDataSource báo rõ trạng thái.
+  const effectivePreset: RangePreset = anchorIso === null && preset !== 'all' ? 'all' : preset;
+  const filter =
+    effectivePreset === 'all'
+      ? null
+      : resolveDateFilter(
+          options.monthFrom ?? null,
+          options.monthTo ?? null,
+          effectivePreset,
+          anchorIso,
+        );
+
+  let countQuery = client.from('leads_public').select('id', { count: 'exact', head: true });
+  countQuery = applyDateFilter(
+    countQuery,
+    filter,
+    (q, col, v) => q.gte(col, v),
+    (q, col, v) => q.lt(col, v),
+  );
+  const { count, error: countErr } = await countQuery;
+  if (countErr) throw new Error(`Supabase count failed: ${countErr.message}`);
+  const totalCount = count ?? 0;
+
+  let undatedCount = 0;
+  if (filter) {
+    const { count: undated, error: undatedErr } = await client
+      .from('leads_public')
+      .select('id', { count: 'exact', head: true })
+      .is('submitted_at_ts', null);
+    if (undatedErr) throw new Error(`Supabase count failed: ${undatedErr.message}`);
+    undatedCount = undated ?? 0;
+  }
+
+  const all: PublicLeadRow[] = [];
+  let leadsSoFar: Lead[] = [];
+  if (totalCount > 0) {
+    for (let from = 0; from < totalCount; from += PAGE) {
+      let pageQuery = client
+        .from('leads_public')
+        .select('*')
+        .order('seq', { ascending: true, nullsFirst: true })
+        .range(from, Math.min(from + PAGE - 1, totalCount - 1));
+      pageQuery = applyDateFilter(
+        pageQuery,
+        filter,
+        (q, col, v) => q.gte(col, v),
+        (q, col, v) => q.lt(col, v),
+      );
+      const { data, error } = await pageQuery;
+      if (error) throw new Error(`Supabase read failed: ${error.message}`);
+      if (!data || data.length === 0) break;
+      all.push(...(data as PublicLeadRow[]));
+      // Dữ liệu giữ file-order (seq) nên earliest của mỗi contact_group đứng trước.
+      // Re-assign duplicates trên toàn bộ đã tải để page đầu hiện đúng ngay.
+      leadsSoFar = assignDuplicates(all.map(publicRowToLead));
+      onProgress?.(all.length, leadsSoFar, totalCount);
+    }
+  }
+  return { rows: leadsSoFar, totalCount, loadedCount: all.length, rangePreset: effectivePreset, undatedCount };
+}
+
+/** Giữ tương thích code cũ: full-load qua preset 'all' (count exact + loop theo total). */
 export async function fetchSupabaseLeads(
   onProgress?: (loaded: number, leadsSoFar?: Lead[]) => void,
 ): Promise<Lead[]> {
-  const client = supabaseClient();
-  if (!client) throw new Error('Supabase chưa cấu hình (thiếu VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)');
-  const all: PublicLeadRow[] = [];
-  let leadsSoFar: Lead[] = [];
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await client
-      .from('leads_public')
-      .select('*')
-      .order('seq', { ascending: true, nullsFirst: true })
-      .range(from, from + PAGE - 1);
-    if (error) throw new Error(`Supabase read failed: ${error.message}`);
-    if (!data || data.length === 0) break;
-    all.push(...(data as PublicLeadRow[]));
-    // Dữ liệu giữ file-order (seq) nên earliest của mỗi contact_group đứng trước.
-    // Re-assign duplicates trên toàn bộ đã tải để page đầu hiện đúng ngay.
-    leadsSoFar = assignDuplicates(all.map(publicRowToLead));
-    onProgress?.(all.length, leadsSoFar);
-    if (data.length < PAGE) break;
-  }
-  return leadsSoFar;
+  const result = await fetchLeadsByRange({ preset: 'all' }, (loaded, leadsSoFar) =>
+    onProgress?.(loaded, leadsSoFar),
+  );
+  return result.rows;
 }

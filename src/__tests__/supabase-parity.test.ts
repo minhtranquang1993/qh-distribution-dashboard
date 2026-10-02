@@ -23,6 +23,7 @@ function toPublicRow(lead: Lead, contactGroup: string): PublicLeadRow {
     batch_id: '11111111-1111-1111-1111-111111111111',
     submission_id: lead.submissionId,
     submitted_at: lead.submittedAt,
+    submitted_at_ts: null,
     raw_url: '',
     raw_first_source_url: '',
     first_user_source: lead.firstUserSource,

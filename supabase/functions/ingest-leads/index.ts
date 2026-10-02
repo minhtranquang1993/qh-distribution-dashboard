@@ -163,6 +163,31 @@ function sanitizeUtmSet(u: UtmSet | undefined): UtmSet {
 }
 
 /**
+ * Parse text `M/D/YYYY[ H:mm]` thành ISO có offset +07:00 cho submitted_at_ts.
+ * Mirror src/lib/submittedAt.ts — sai format / ngoài range / ngày không tồn
+ * tại => null (KHÔNG normalize như to_timestamp).
+ */
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function parseSubmittedAtTs(text: string | undefined): string | null {
+  const m = /^\s*(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?\s*$/.exec(text ?? '');
+  if (!m) return null;
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  const year = Number(m[3]);
+  const hour = m[4] === undefined ? 0 : Number(m[4]);
+  const minute = m[5] === undefined ? 0 : Number(m[5]);
+  if (!Number.isInteger(year) || year < 1 || year > 9999) return null;
+  if (month < 1 || month > 12) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  if (day < 1 || day > daysInMonth(year, month)) return null;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${year}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00+07:00`;
+}
+
+/**
  * UUID deterministic (v5-shaped): cùng (batchId, leadKey) → cùng UUID ở
  * mọi chunk. Lưu ý: KHÔNG phải UUIDv5 chuẩn RFC (chuẩn hash namespace
  * bytes + name bytes; đây hash chuỗi text) — chỉ cần deterministic hợp lệ
@@ -242,6 +267,7 @@ Deno.serve(async (req: Request) => {
       seq: Number.isFinite(Number(seq)) ? Number(seq) : 0,
       submission_id: lead.submissionId,
       submitted_at: lead.submittedAt ?? '',
+      submitted_at_ts: parseSubmittedAtTs(lead.submittedAt ?? ''),
       raw_url: sanitizeUrlQuery(str(raw.URL)),
       raw_first_source_url: sanitizeUrlQuery(str(raw.first_source_url)),
       first_user_source: lead.firstUserSource ?? '',

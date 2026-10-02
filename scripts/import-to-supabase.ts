@@ -10,6 +10,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import Papa from 'papaparse';
 import { createClient } from '@supabase/supabase-js';
 import { transformRows } from '../src/lib/transform';
+import { parseSubmittedAtTs } from '../src/lib/submittedAt';
 import { sanitizeUrlQuery, sanitizeUtmSet } from '../src/lib/sanitizeUrlQuery';
 import type { RawRow } from '../src/types/raw';
 
@@ -95,6 +96,7 @@ async function main() {
       seq,
       submission_id: lead.submissionId,
       submitted_at: lead.submittedAt,
+      submitted_at_ts: parseSubmittedAtTs(lead.submittedAt),
       raw_url: sanitizeUrlQuery(str(raw.URL)),
       raw_first_source_url: sanitizeUrlQuery(str(raw.first_source_url)),
       first_user_source: lead.firstUserSource,

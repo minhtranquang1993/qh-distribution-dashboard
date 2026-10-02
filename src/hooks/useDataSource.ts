@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useIngest } from '@/hooks/useIngest';
-import { fetchSupabaseLeads } from '@/lib/supabaseLeads';
+import {
+  fetchLeadsByRange,
+  fetchRangeAnchor,
+  type RangePreset,
+} from '@/lib/supabaseLeads';
+import { monthRangeFromAnchor } from '@/lib/submittedAt';
 import { dedupeForSave, saveKeyOf, saveLeadsToDb, type SaveProgress } from '@/lib/ingestApi';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import type { Lead } from '@/types/lead';
@@ -10,8 +15,10 @@ export type DataSource = 'supabase' | 'csv';
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'skipped';
 
 /**
- * Nguồn dữ liệu hợp nhất (GĐ2-Q3):
- * - Mặc định load Supabase (leads_public full-load ≤50k).
+ * Nguồn dữ liệu hợp nhất (Phase B):
+ * - Mặc định load Supabase preset 1 tháng gần nhất (neo dữ liệu, +07).
+ * - Preset 1/3/6/tất cả lọc + paging server-side (submitted_at_ts).
+ * - Aggregates pha 1 vẫn client-side trên rows của range đã fetch.
  * - CSV upload UNION in-memory, dedupe theo submission_id.
  * - CSV mới parse xong tự lưu DB qua Edge Function `ingest-leads`
  *   (service_role nằm trong function secrets, anon key không ghi trực tiếp).
@@ -22,32 +29,61 @@ export function useDataSource() {
   const [dbStatus, setDbStatus] = useState<'idle' | 'loading' | 'ready' | 'error' | 'unconfigured'>('idle');
   const [dbError, setDbError] = useState<string | null>(null);
   const [dbLoaded, setDbLoaded] = useState(0);
+  const [dbTotal, setDbTotal] = useState(0);
+  const [dbUndated, setDbUndated] = useState(0);
   const [dbLoadingMore, setDbLoadingMore] = useState(false);
+  const [preset, setPresetState] = useState<RangePreset>('1m');
+  const [rangeLabel, setRangeLabel] = useState<string | null>(null);
   const [source, setSource] = useState<DataSource>('supabase');
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [saveProgress, setSaveProgress] = useState<SaveProgress | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const savedForRef = useRef<string | null>(null);
   const savingForRef = useRef<string | null>(null);
+  const presetRef = useRef<RangePreset>('1m');
 
-  const loadSupabase = useCallback(async () => {
+  const loadSupabase = useCallback(async (nextPreset?: RangePreset) => {
     if (!isSupabaseConfigured()) {
       setDbStatus('unconfigured');
       return;
     }
+    const activePreset = nextPreset ?? presetRef.current;
     setDbStatus((prev) => (prev === 'ready' ? prev : 'loading'));
     setDbLoadingMore(true);
     setDbError(null);
     try {
-      const leads = await fetchSupabaseLeads((loaded, leadsSoFar) => {
-        setDbLoaded(loaded);
-        // Hiện dashboard ngay từ page đầu, các page sau cập nhật nền.
-        if (leadsSoFar && leadsSoFar.length > 0) {
-          setDbLeads(leadsSoFar);
-          setDbStatus('ready');
-        }
-      });
-      setDbLeads(leads);
+      const anchor = await fetchRangeAnchor();
+      const custom = monthRangeFromAnchor(anchor.maxSubmittedAtTs ?? '', activePreset);
+      setRangeLabel(
+        activePreset === 'all'
+          ? null
+          : custom
+            ? `${custom.monthFrom} → ${custom.monthTo}`
+            : anchor.maxSubmittedAtTs
+              ? 'chưa xác định tháng'
+              : 'chưa có dữ liệu ngày',
+      );
+      const result = await fetchLeadsByRange(
+        {
+          preset: activePreset,
+          monthFrom: custom?.monthFrom ?? null,
+          monthTo: custom?.monthTo ?? null,
+          anchorIso: anchor.maxSubmittedAtTs,
+        },
+        (loaded, leadsSoFar, total) => {
+          setDbLoaded(loaded);
+          setDbTotal(total);
+          // Hiện dashboard ngay từ page đầu, các page sau cập nhật nền.
+          if (leadsSoFar.length > 0) {
+            setDbLeads(leadsSoFar);
+            setDbStatus('ready');
+          }
+        },
+      );
+      setDbLeads(result.rows);
+      setDbLoaded(result.loadedCount);
+      setDbTotal(result.totalCount);
+      setDbUndated(result.undatedCount);
       setDbStatus('ready');
       setDbLoadingMore(false);
     } catch (e) {
@@ -62,6 +98,15 @@ export function useDataSource() {
       });
     }
   }, []);
+
+  const setPreset = useCallback(
+    (next: RangePreset) => {
+      presetRef.current = next;
+      setPresetState(next);
+      void loadSupabase(next);
+    },
+    [loadSupabase],
+  );
 
   useEffect(() => {
     loadSupabase();
@@ -137,9 +182,14 @@ export function useDataSource() {
     dbStatus,
     dbError,
     dbLoaded,
+    dbTotal,
+    dbUndated,
     dbLoadingMore,
     dbCount: dbLeads.length,
     csvCount: csvLeads.length,
+    preset,
+    rangeLabel,
+    setPreset,
     saveStatus,
     saveProgress,
     saveError,

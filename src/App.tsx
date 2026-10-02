@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useDataSource } from '@/hooks/useDataSource';
+import type { RangePreset } from '@/lib/supabaseLeads';
 import { UploadPanel } from '@/components/UploadPanel';
 import { OverviewNew } from '@/components/OverviewNew';
 import { AcquireGroup, QualityGroup, OverviewTab } from '@/components/Groups';
@@ -80,20 +81,34 @@ export default function App() {
             <p className="text-sm text-slate-300">
               {data.dbStatus === 'loading' && data.dbCount === 0 && `Đang tải Supabase… ${data.dbLoaded.toLocaleString('vi-VN')} dòng`}
               {(data.dbStatus === 'ready' || (data.dbStatus === 'loading' && data.dbCount > 0)) &&
-                (data.dbLoadingMore
-                  ? `Supabase: ${data.dbCount.toLocaleString('vi-VN')} dòng — đang tải thêm…`
-                  : `Supabase: ${data.dbCount.toLocaleString('vi-VN')} dòng trong DB`)}
+                (data.dbLoadingMore && data.dbLoaded < data.dbTotal
+                  ? `Supabase: ${data.dbTotal.toLocaleString('vi-VN')} dòng${data.rangeLabel ? ` (${data.rangeLabel})` : ''} — đang tải thêm ${data.dbLoaded.toLocaleString('vi-VN')}/${data.dbTotal.toLocaleString('vi-VN')}…`
+                  : `Supabase: ${data.dbTotal.toLocaleString('vi-VN')} dòng${data.rangeLabel ? ` (${data.rangeLabel})` : ' trong DB'}`)}
+              {data.dbUndated > 0 && (
+                <span className="text-slate-500"> · {data.dbUndated.toLocaleString('vi-VN')} dòng không có ngày</span>
+              )}
               {data.dbStatus === 'error' && <span className="text-rose-400">Supabase lỗi: {data.dbError}</span>}
               {data.dbStatus === 'unconfigured' && 'Supabase chưa cấu hình — dùng CSV bên dưới.'}
               {data.csvCount > 0 && (
                 <span className="text-sky-300"> · CSV thêm {data.csvCount.toLocaleString('vi-VN')} dòng</span>
               )}
             </p>
-            {data.dbStatus === 'error' && (
-              <button className="btn border border-slate-700 text-xs text-slate-300 hover:bg-slate-800" onClick={data.reloadDb}>
-                Thử lại
-              </button>
-            )}
+            <div className="flex items-center gap-1">
+              {(['1m', '3m', '6m', 'all'] as const).map((p: RangePreset) => (
+                <button
+                  key={p}
+                  onClick={() => data.setPreset(p)}
+                  className={`chip ${data.preset === p ? 'bg-sky-500/20 text-sky-300' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                >
+                  {p === 'all' ? 'Tất cả' : p === '1m' ? '1 tháng' : p === '3m' ? '3 tháng' : '6 tháng'}
+                </button>
+              ))}
+              {data.dbStatus === 'error' && (
+                <button className="btn border border-slate-700 text-xs text-slate-300 hover:bg-slate-800" onClick={() => data.reloadDb()}>
+                  Thử lại
+                </button>
+              )}
+            </div>
           </div>
         ) : (
           <p className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
