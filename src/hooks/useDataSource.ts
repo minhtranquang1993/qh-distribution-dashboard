@@ -14,14 +14,29 @@ export type DataSource = 'supabase' | 'csv';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'skipped';
 
+/** Cấu hình server-range đã apply (duy nhất được fetch). Tách khỏi editor selection. */
+export type AppliedRange =
+  | { preset: '1m' | '3m' | '6m' | 'all' }
+  | { preset: 'custom'; from: string; to: string };
+
+export interface CustomDraft {
+  from: string;
+  to: string;
+}
+
+/** Draft hợp lệ khi cả 2 non-empty và from <= to (so chuỗi YYYY-MM). */
+export function isCustomDraftValid(draft: CustomDraft): boolean {
+  return Boolean(draft.from && draft.to && draft.from <= draft.to);
+}
+
 /**
- * Nguồn dữ liệu hợp nhất (Phase B):
- * - Mặc định load Supabase preset 1 tháng gần nhất (neo dữ liệu, +07).
- * - Preset 1/3/6/tất cả lọc + paging server-side (submitted_at_ts).
- * - Aggregates pha 1 vẫn client-side trên rows của range đã fetch.
- * - CSV upload UNION in-memory, dedupe theo submission_id.
- * - CSV mới parse xong tự lưu DB qua Edge Function `ingest-leads`
- *   (service_role nằm trong function secrets, anon key không ghi trực tiếp).
+ * Nguồn dữ liệu hợp nhất (Phase B + load-lien-custom-date):
+ * - Load BLOCKING: mọi request server-range chỉ commit 1 lần khi đủ,
+ *   App ẩn dashboard trong mọi loading (skeleton), không render partial.
+ * - Guard requestId trên MỌI nhánh async (progress/resolve/reject).
+ * - Reload lỗi giữ snapshot đã commit + banner lỗi, không trắng trang.
+ * - Custom month From-To: editorPreset/customDraft tách khỏi applied;
+ *   reload (kể cả sau save CSV) luôn dùng applied.
  */
 export function useDataSource() {
   const ingest = useIngest();
@@ -31,8 +46,8 @@ export function useDataSource() {
   const [dbLoaded, setDbLoaded] = useState(0);
   const [dbTotal, setDbTotal] = useState(0);
   const [dbUndated, setDbUndated] = useState(0);
-  const [dbLoadingMore, setDbLoadingMore] = useState(false);
-  const [preset, setPresetState] = useState<RangePreset>('1m');
+  const [editorPreset, setEditorPresetState] = useState<RangePreset>('1m');
+  const [customDraft, setCustomDraftState] = useState<CustomDraft>({ from: '', to: '' });
   const [rangeLabel, setRangeLabel] = useState<string | null>(null);
   const [source, setSource] = useState<DataSource>('supabase');
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
@@ -40,73 +55,135 @@ export function useDataSource() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const savedForRef = useRef<string | null>(null);
   const savingForRef = useRef<string | null>(null);
-  const presetRef = useRef<RangePreset>('1m');
+  const appliedRef = useRef<AppliedRange>({ preset: '1m' });
+  const requestIdRef = useRef(0);
+  const committedRef = useRef(false);
+  // Snapshot đã commit (hiển thị trên dashboard) — tách khỏi applied (cấu hình
+  // request). Prefill Custom luôn từ snapshot này, không từ applied/draft.
+  const committedMonthsRef = useRef<{ from: string; to: string } | null>(null);
+  const committedCountersRef = useRef<{ loaded: number; total: number; undated: number } | null>(null);
 
-  const loadSupabase = useCallback(async (nextPreset?: RangePreset) => {
+  const loadSupabase = useCallback(async (nextApplied?: AppliedRange) => {
     if (!isSupabaseConfigured()) {
       setDbStatus('unconfigured');
       return;
     }
-    const activePreset = nextPreset ?? presetRef.current;
-    setDbStatus((prev) => (prev === 'ready' ? prev : 'loading'));
-    setDbLoadingMore(true);
+    const activeApplied = nextApplied ?? appliedRef.current;
+    const myId = requestIdRef.current + 1;
+    requestIdRef.current = myId;
+    const isCurrent = () => requestIdRef.current === myId;
+    setDbStatus('loading');
     setDbError(null);
+    // Reset counters của request mới để skeleton/header không hiện số của
+    // request cũ (vd 1800/1800) trong lúc chờ anchor/count đầu. Snapshot đã
+    // commit giữ trong committedCountersRef để reload lỗi còn restore được.
+    setDbLoaded(0);
+    setDbTotal(0);
     try {
       const anchor = await fetchRangeAnchor();
-      const custom = monthRangeFromAnchor(anchor.maxSubmittedAtTs ?? '', activePreset);
-      setRangeLabel(
-        activePreset === 'all'
-          ? null
-          : custom
+      if (!isCurrent()) return;
+      let monthFrom: string | null = null;
+      let monthTo: string | null = null;
+      let label: string | null = null;
+      if (activeApplied.preset === 'all') {
+        label = null;
+      } else if (activeApplied.preset === 'custom') {
+        monthFrom = activeApplied.from;
+        monthTo = activeApplied.to;
+        label = `${activeApplied.from} → ${activeApplied.to}`;
+      } else {
+        const custom = monthRangeFromAnchor(anchor.maxSubmittedAtTs ?? '', activeApplied.preset);
+        monthFrom = custom?.monthFrom ?? null;
+        monthTo = custom?.monthTo ?? null;
+        label =
+          custom
             ? `${custom.monthFrom} → ${custom.monthTo}`
             : anchor.maxSubmittedAtTs
               ? 'chưa xác định tháng'
-              : 'chưa có dữ liệu ngày',
-      );
+              : 'chưa có dữ liệu ngày';
+      }
       const result = await fetchLeadsByRange(
         {
-          preset: activePreset,
-          monthFrom: custom?.monthFrom ?? null,
-          monthTo: custom?.monthTo ?? null,
+          preset: activeApplied.preset,
+          monthFrom,
+          monthTo,
           anchorIso: anchor.maxSubmittedAtTs,
         },
-        (loaded, leadsSoFar, total) => {
+        (loaded, _leadsSoFar, total) => {
+          // Chỉ progress counters, KHÔNG set leads giữa chừng.
+          if (!isCurrent()) return;
           setDbLoaded(loaded);
           setDbTotal(total);
-          // Hiện dashboard ngay từ page đầu, các page sau cập nhật nền.
-          if (leadsSoFar.length > 0) {
-            setDbLeads(leadsSoFar);
-            setDbStatus('ready');
-          }
         },
       );
+      if (!isCurrent()) return;
       setDbLeads(result.rows);
       setDbLoaded(result.loadedCount);
       setDbTotal(result.totalCount);
       setDbUndated(result.undatedCount);
+      setRangeLabel(label);
+      // Ghi snapshot đã commit: có bounds thì giữ, preset all thì null
+      // (mở Custom sau khi xem all → draft rỗng, không dùng range cũ).
+      committedMonthsRef.current = monthFrom && monthTo ? { from: monthFrom, to: monthTo } : null;
+      committedRef.current = true;
+      committedCountersRef.current = {
+        loaded: result.loadedCount,
+        total: result.totalCount,
+        undated: result.undatedCount,
+      };
       setDbStatus('ready');
-      setDbLoadingMore(false);
     } catch (e) {
-      setDbLoadingMore(false);
-      // Đã có dữ liệu partial thì giữ dashboard, không lật sang error.
-      setDbLeads((prev) => {
-        if (prev.length === 0) {
-          setDbError(e instanceof Error ? e.message : 'Không tải được Supabase');
-          setDbStatus('error');
+      if (!isCurrent()) return;
+      const message = e instanceof Error ? e.message : 'Không tải được Supabase';
+      if (!committedRef.current) {
+        setDbError(message);
+        setDbStatus('error');
+      } else {
+        // Giữ snapshot đã commit, chỉ hiện banner lỗi — trả status về ready
+        // để App hiện lại dashboard cũ thay vì kẹt skeleton. Restore counters
+        // đã commit để header không cặp total mới + rows/label cũ.
+        const snap = committedCountersRef.current;
+        if (snap) {
+          setDbLoaded(snap.loaded);
+          setDbTotal(snap.total);
+          setDbUndated(snap.undated);
         }
-        return prev;
-      });
+        setDbError(message);
+        setDbStatus('ready');
+      }
     }
   }, []);
 
   const setPreset = useCallback(
-    (next: RangePreset) => {
-      presetRef.current = next;
-      setPresetState(next);
-      void loadSupabase(next);
+    (next: Exclude<RangePreset, 'custom'>) => {
+      const applied: AppliedRange = { preset: next };
+      appliedRef.current = applied;
+      setEditorPresetState(next);
+      void loadSupabase(applied);
     },
     [loadSupabase],
   );
+
+  /** Mở editor Custom: prefill từ snapshot ĐÃ COMMIT (đang hiển thị),
+   * KHÔNG từ applied/draft. Chỉ đổi highlight, KHÔNG fetch. */
+  const openCustom = useCallback(() => {
+    setEditorPresetState('custom');
+    const snap = committedMonthsRef.current;
+    setCustomDraftState(snap ? { ...snap } : { from: '', to: '' });
+  }, []);
+
+  const setCustomDraft = useCallback((draft: CustomDraft) => {
+    setCustomDraftState(draft);
+  }, []);
+
+  /** Áp dụng draft hợp lệ: set applied custom + fetch. Draft thiếu/đảo → no-op. */
+  const applyCustom = useCallback(() => {
+    if (!isCustomDraftValid(customDraft)) return;
+    const applied: AppliedRange = { preset: 'custom', from: customDraft.from, to: customDraft.to };
+    appliedRef.current = applied;
+    setEditorPresetState('custom');
+    void loadSupabase(applied);
+  }, [loadSupabase, customDraft]);
 
   useEffect(() => {
     loadSupabase();
@@ -117,6 +194,7 @@ export function useDataSource() {
   // Key = checksum submissionIds đã dedupe: file khác cùng tên/count không
   // bị skip nhầm; chỉ đánh dấu saved SAU khi finalize thành công nên lỗi
   // mạng vẫn retry được (guard bằng savingFor, không phải savedFor).
+  // Reload sau save dùng applied hiện tại (không dùng draft/editor).
   useEffect(() => {
     const st = ingest.state;
     if (st.status === 'idle') {
@@ -184,12 +262,16 @@ export function useDataSource() {
     dbLoaded,
     dbTotal,
     dbUndated,
-    dbLoadingMore,
     dbCount: dbLeads.length,
     csvCount: csvLeads.length,
-    preset,
+    preset: editorPreset,
     rangeLabel,
     setPreset,
+    openCustom,
+    customDraft,
+    setCustomDraft,
+    applyCustom,
+    customValid: isCustomDraftValid(customDraft),
     saveStatus,
     saveProgress,
     saveError,

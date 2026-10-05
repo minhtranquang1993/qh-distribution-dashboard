@@ -6,7 +6,7 @@
  * đổi cả chỗ còn lại + Edge Function ingest-leads.
  */
 
-export type RangePreset = '1m' | '3m' | '6m' | 'all';
+export type RangePreset = '1m' | '3m' | '6m' | 'all' | 'custom';
 
 const SUBMITTED_RE =
   /^\s*(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?\s*$/;
@@ -56,12 +56,13 @@ function shiftMonth(monthKey: string, delta: number): string {
 /**
  * Từ anchor (max submitted_at_ts, wall-clock +07) suy monthFrom/monthTo.
  * Neo theo DỮ LIỆU, không neo now() — tránh default rỗng khi data cũ.
+ * Trả null cho 'all' và 'custom' (custom dùng bounds từ applied, không suy).
  */
 export function monthRangeFromAnchor(
   anchorIso: string,
   preset: RangePreset,
 ): { monthFrom: string; monthTo: string } | null {
-  if (preset === 'all') return null;
+  if (preset === 'all' || preset === 'custom') return null;
   const endMonth = anchorMonthOf(anchorIso);
   if (!endMonth) return null;
   const n = preset === '1m' ? 1 : preset === '3m' ? 3 : 6;

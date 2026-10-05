@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useDataSource } from '@/hooks/useDataSource';
 import type { RangePreset } from '@/lib/supabaseLeads';
 import { UploadPanel } from '@/components/UploadPanel';
+import { DashboardSkeleton } from '@/components/DashboardSkeleton';
 import { OverviewNew } from '@/components/OverviewNew';
 import { AcquireGroup, QualityGroup, OverviewTab } from '@/components/Groups';
 import { LeadsModule } from '@/components/LeadsModule';
@@ -59,6 +60,10 @@ export default function App() {
   };
 
   const ready = base.length > 0;
+  // Blocking render: loading server-range thì ẩn dashboard (kể cả đã có rows
+  // cũ), hiện skeleton — không bao giờ cặp rows cũ + label mới.
+  const serverLoading = data.dbStatus === 'loading';
+  const showDashboard = ready && !serverLoading;
   const filteredNote = isFiltered(filter) ? 'trên bộ lọc hiện tại' : undefined;
 
   return (
@@ -71,20 +76,19 @@ export default function App() {
             khi có dữ liệu chi phí ads, các segment sẽ chuyển từ quyết định chờ sang quyết định scale.
           </p>
         </div>
-        {ready && <ModeToggle mode={mode} onChange={setMode} />}
+        {showDashboard && <ModeToggle mode={mode} onChange={setMode} />}
       </header>
 
       <div className="space-y-4">
         {/* Nguồn Supabase */}
         {data.supabaseConfigured ? (
-          <div className="card flex flex-wrap items-center justify-between gap-2">
+          <div className="card space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm text-slate-300">
-              {data.dbStatus === 'loading' && data.dbCount === 0 && `Đang tải Supabase… ${data.dbLoaded.toLocaleString('vi-VN')} dòng`}
-              {(data.dbStatus === 'ready' || (data.dbStatus === 'loading' && data.dbCount > 0)) &&
-                (data.dbLoadingMore && data.dbLoaded < data.dbTotal
-                  ? `Supabase: ${data.dbTotal.toLocaleString('vi-VN')} dòng${data.rangeLabel ? ` (${data.rangeLabel})` : ''} — đang tải thêm ${data.dbLoaded.toLocaleString('vi-VN')}/${data.dbTotal.toLocaleString('vi-VN')}…`
-                  : `Supabase: ${data.dbTotal.toLocaleString('vi-VN')} dòng${data.rangeLabel ? ` (${data.rangeLabel})` : ' trong DB'}`)}
-              {data.dbUndated > 0 && (
+              {data.dbStatus === 'loading' && `Đang tải Supabase… ${data.dbLoaded.toLocaleString('vi-VN')}${data.dbTotal > 0 ? `/${data.dbTotal.toLocaleString('vi-VN')}` : ''} dòng`}
+              {data.dbStatus === 'ready' &&
+                `Supabase: ${data.dbTotal.toLocaleString('vi-VN')} dòng${data.rangeLabel ? ` (${data.rangeLabel})` : ' trong DB'}`}
+              {data.dbUndated > 0 && data.dbStatus === 'ready' && (
                 <span className="text-slate-500"> · {data.dbUndated.toLocaleString('vi-VN')} dòng không có ngày</span>
               )}
               {data.dbStatus === 'error' && <span className="text-rose-400">Supabase lỗi: {data.dbError}</span>}
@@ -94,7 +98,7 @@ export default function App() {
               )}
             </p>
             <div className="flex items-center gap-1">
-              {(['1m', '3m', '6m', 'all'] as const).map((p: RangePreset) => (
+              {(['1m', '3m', '6m', 'all'] as const).map((p: Exclude<RangePreset, 'custom'>) => (
                 <button
                   key={p}
                   onClick={() => data.setPreset(p)}
@@ -103,12 +107,51 @@ export default function App() {
                   {p === 'all' ? 'Tất cả' : p === '1m' ? '1 tháng' : p === '3m' ? '3 tháng' : '6 tháng'}
                 </button>
               ))}
+              <button
+                onClick={data.openCustom}
+                className={`chip ${data.preset === 'custom' ? 'bg-sky-500/20 text-sky-300' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+              >
+                Custom
+              </button>
               {data.dbStatus === 'error' && (
                 <button className="btn border border-slate-700 text-xs text-slate-300 hover:bg-slate-800" onClick={() => data.reloadDb()}>
                   Thử lại
                 </button>
               )}
             </div>
+            </div>
+            {data.preset === 'custom' && (
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 text-xs text-slate-400">
+                  Từ tháng
+                  <input
+                    type="month"
+                    value={data.customDraft.from}
+                    onChange={(e) => data.setCustomDraft({ ...data.customDraft, from: e.target.value })}
+                    className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-400">
+                  Tới tháng
+                  <input
+                    type="month"
+                    value={data.customDraft.to}
+                    onChange={(e) => data.setCustomDraft({ ...data.customDraft, to: e.target.value })}
+                    className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+                  />
+                </label>
+                <button
+                  onClick={data.applyCustom}
+                  disabled={!data.customValid}
+                  className="btn border border-slate-700 text-xs text-slate-300 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Áp dụng
+                </button>
+                {!data.customValid && (
+                  <span className="text-xs text-slate-500">Chọn đủ Từ–Tới tháng, Từ ≤ Tới</span>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <p className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
@@ -134,7 +177,16 @@ export default function App() {
           </div>
         )}
 
-        {ready ? (
+        {/* Reload lỗi giữ snapshot + banner, không trắng trang. */}
+        {data.dbError && data.dbStatus === 'ready' && (
+          <p className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+            Tải khoảng mới thất bại: {data.dbError} — đang hiển thị dữ liệu cũ ({data.rangeLabel ?? 'toàn bộ'}).
+          </p>
+        )}
+
+        {serverLoading ? (
+          <DashboardSkeleton loaded={data.dbLoaded} total={data.dbTotal} />
+        ) : showDashboard ? (
           <>
             <FilterBar filter={filter} onChange={setFilter} total={base.length} filtered={filtered.length} />
 
@@ -175,7 +227,9 @@ export default function App() {
           data.dbStatus !== 'loading' && (
             <div className="card text-center text-sm text-slate-500">
               {data.supabaseConfigured
-                ? 'Đang tải dữ liệu từ Supabase, hoặc nạp file CSV wholesale để phân tích file riêng.'
+                ? data.dbStatus === 'ready'
+                  ? `Không có dữ liệu trong khoảng đã chọn${data.rangeLabel ? ` (${data.rangeLabel})` : ''} — thử khoảng khác hoặc nạp file CSV wholesale.`
+                  : 'Đang tải dữ liệu từ Supabase, hoặc nạp file CSV wholesale để phân tích file riêng.'
                 : 'Nạp file CSV wholesale để bắt đầu phân tích. File 67MB vẫn parse được — quá trình chạy nền trong Web Worker.'}
             </div>
           )

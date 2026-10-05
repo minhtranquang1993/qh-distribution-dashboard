@@ -187,6 +187,11 @@ function resolveDateFilter(
   anchorIso: string | null,
 ): DateFilter | null {
   if (preset === 'all') return null;
+  // Custom bắt buộc có bounds từ applied (lỗi code nếu thiếu) — không suy từ anchor.
+  if (preset === 'custom') {
+    if (monthFrom && monthTo) return rangeBounds(monthFrom, monthTo);
+    throw new Error('Custom range thiếu monthFrom/monthTo (lỗi code: reload phải dùng applied)');
+  }
   if (monthFrom && monthTo) return rangeBounds(monthFrom, monthTo);
   if (!anchorIso) return null;
   const range = monthRangeFromAnchor(anchorIso, preset);
@@ -200,12 +205,13 @@ function resolveDateFilter(
  * và làm lệch tier (parity AC6).
  * Dừng loop theo totalCount (count exact), KHÔNG dùng `data.length < PAGE`
  * làm điều kiện duy nhất — PostgREST cap nhỏ hơn PAGE sẽ dừng sớm (bug 1000).
- * Stream từng page qua onProgress(loaded, leadsSoFar, total) để UI hiện ngay
- * từ page đầu, phần còn lại load nền. */
+ * onProgress(loaded, leadsSoFar, total) chỉ để consumer hiện progress counters;
+ * consumer blocking (useDataSource) KHÔNG set leads giữa chừng — commit 1 lần
+ * khi đủ range. Preset 'custom' bắt buộc có monthFrom/monthTo (từ applied). */
 export async function fetchLeadsByRange(
   options: {
     preset: RangePreset;
-    /** Cho phép preset custom khi FilterBar chọn tay; mặc định suy từ anchor. */
+    /** Bounds explicit cho preset 'custom' (từ applied); preset chuẩn suy từ anchor. */
     monthFrom?: string | null;
     monthTo?: string | null;
     anchorIso?: string | null;
@@ -217,9 +223,13 @@ export async function fetchLeadsByRange(
   if (!client) throw new Error('Supabase chưa cấu hình (thiếu VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)');
   const anchorIso = options.anchorIso ?? (await fetchRangeAnchor()).maxSubmittedAtTs;
   // Pre-migration (hoặc DB toàn dòng không ngày): không anchor thì không lọc
-  // server được (WHERE cột chưa tồn tại sẽ lỗi). Fallback về preset all để
-  // dashboard vẫn chạy — rangeLabel ở useDataSource báo rõ trạng thái.
-  const effectivePreset: RangePreset = anchorIso === null && preset !== 'all' ? 'all' : preset;
+  // server được (WHERE cột chưa tồn tại sẽ lỗi). Preset chuẩn fallback về
+  // 'all' để dashboard vẫn chạy — rangeLabel ở useDataSource báo rõ trạng thái.
+  // Riêng 'custom' có bounds explicit thì GIỮ NGUYÊN (không fallback all):
+  // fallback all với label custom sẽ hiện sai dữ liệu, thà để query lỗi
+  // và hook hiện error còn trung thực hơn.
+  const effectivePreset: RangePreset =
+    anchorIso === null && preset !== 'all' && preset !== 'custom' ? 'all' : preset;
   const filter =
     effectivePreset === 'all'
       ? null

@@ -216,6 +216,10 @@ describe('preset range: calendar neo dữ liệu, biên +07', () => {
     expect(monthRangeFromAnchor(anchor, 'all')).toBeNull();
   });
 
+  it('preset custom trả null (dùng bounds từ applied, không suy từ anchor)', () => {
+    expect(monthRangeFromAnchor('2026-09-15T10:00:00+07:00', 'custom')).toBeNull();
+  });
+
   it('biên server [gte đầu tháng, lt đầu tháng sau)', () => {
     expect(rangeBounds('2026-09', '2026-09')).toEqual({
       gte: '2026-09-01T00:00:00+07:00',
@@ -289,5 +293,58 @@ describe('fetchLeadsByRange: dừng theo totalCount, header phân biệt total/l
     expect(result.rangePreset).toBe('all');
     expect(result.totalCount).toBe(10);
     expect(result.rows.length).toBe(10);
+  });
+
+  it('preset custom lọc đúng khoảng lẻ ngoài 1/3/6 (07–08, không lấy 09)', async () => {
+    const rows: PublicLeadRow[] = [];
+    for (let i = 0; i < 1000; i += 1) {
+      rows.push(makeRow(i, `2026-07-${String((i % 28) + 1).padStart(2, '0')}T10:00:00+07:00`, '2026-07'));
+    }
+    for (let i = 1000; i < 1800; i += 1) {
+      rows.push(makeRow(i, `2026-08-${String((i % 28) + 1).padStart(2, '0')}T10:00:00+07:00`, '2026-08'));
+    }
+    for (let i = 1800; i < 2500; i += 1) {
+      rows.push(makeRow(i, `2026-09-${String((i % 28) + 1).padStart(2, '0')}T10:00:00+07:00`, '2026-09'));
+    }
+    mockState.client = createMockClient(rows);
+    const { fetchLeadsByRange } = await import('@/lib/supabaseLeads');
+    const result = await fetchLeadsByRange({
+      preset: 'custom',
+      monthFrom: '2026-07',
+      monthTo: '2026-08',
+      anchorIso: '2026-09-15T10:00:00+07:00',
+    });
+    expect(result.rangePreset).toBe('custom');
+    expect(result.totalCount).toBe(1800);
+    expect(result.rows.length).toBe(1800);
+    expect(result.rows.every((l) => !l.submittedAt.startsWith('2026-09'))).toBe(true);
+  });
+
+  it('preset custom thiếu bounds thì throw (lỗi code, không fallback im lặng)', async () => {
+    const rows: PublicLeadRow[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      rows.push(makeRow(i, `2026-09-0${i + 1}T10:00:00+07:00`, '2026-09'));
+    }
+    mockState.client = createMockClient(rows);
+    const { fetchLeadsByRange } = await import('@/lib/supabaseLeads');
+    await expect(
+      fetchLeadsByRange({ preset: 'custom', anchorIso: '2026-09-15T10:00:00+07:00' }),
+    ).rejects.toThrow(/thiếu monthFrom\/monthTo/);
+  });
+});
+
+describe('isCustomDraftValid: draft/applied tách bạch', () => {
+  it('đủ From–To và From ≤ To mới hợp lệ', async () => {
+    const { isCustomDraftValid } = await import('@/hooks/useDataSource');
+    expect(isCustomDraftValid({ from: '2026-07', to: '2026-08' })).toBe(true);
+    expect(isCustomDraftValid({ from: '2026-08', to: '2026-08' })).toBe(true);
+  });
+
+  it('thiếu 1 đầu hoặc đảo (from > to) đều không hợp lệ', async () => {
+    const { isCustomDraftValid } = await import('@/hooks/useDataSource');
+    expect(isCustomDraftValid({ from: '', to: '2026-08' })).toBe(false);
+    expect(isCustomDraftValid({ from: '2026-07', to: '' })).toBe(false);
+    expect(isCustomDraftValid({ from: '', to: '' })).toBe(false);
+    expect(isCustomDraftValid({ from: '2026-09', to: '2026-07' })).toBe(false);
   });
 });
