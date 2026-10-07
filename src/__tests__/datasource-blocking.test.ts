@@ -102,8 +102,8 @@ beforeEach(() => {
   hookState.anchorIso = '2026-09-15T10:00:00+07:00';
 });
 
-describe('useDataSource blocking: progress không publish dashboard', () => {
-  it('onProgress nhiều page vẫn loading, commit 1 lần khi đủ (rows+total+label)', async () => {
+describe('useDataSource progressive: publish page đầu ngay, giữ snapshot cũ trong gap', () => {
+  it('onProgress commit dần prefix (first paint sau page đầu, partial gắn cờ chưa đủ)', async () => {
     const ui = renderDataSource();
     try {
       await flush();
@@ -112,12 +112,19 @@ describe('useDataSource blocking: progress không publish dashboard', () => {
       act(() => {
         hookState.fetches[0].onProgress?.(2, partial, 700);
       });
+      // First paint: loading nhưng đã hiện 2 dòng + label MỚI + cờ partial.
+      expect(ui.current.dbStatus).toBe('loading');
+      expect(ui.current.combined).toHaveLength(2);
+      expect(ui.current.visibleLeads).toHaveLength(2);
+      expect(ui.current.dbPartial).toBe(true);
+      expect(ui.current.rangeLabel).toBe('2026-09 → 2026-09');
+      expect(ui.current.dbLoaded).toBe(2);
+      expect(ui.current.dbTotal).toBe(700);
       act(() => {
         hookState.fetches[0].onProgress?.(500, partial, 700);
       });
-      expect(ui.current.dbStatus).toBe('loading');
-      expect(ui.current.combined).toHaveLength(0);
-      expect(ui.current.visibleLeads).toHaveLength(0);
+      expect(ui.current.combined).toHaveLength(2);
+      expect(ui.current.dbLoaded).toBe(500);
       const full = Array.from({ length: 700 }, (_, i) => makeLead(i, '2026-09'));
       await act(async () => {
         hookState.fetches[0].resolve(makeResult(full, 700));
@@ -125,13 +132,14 @@ describe('useDataSource blocking: progress không publish dashboard', () => {
       expect(ui.current.dbStatus).toBe('ready');
       expect(ui.current.combined).toHaveLength(700);
       expect(ui.current.dbTotal).toBe(700);
+      expect(ui.current.dbPartial).toBe(false);
       expect(ui.current.rangeLabel).toBe('2026-09 → 2026-09');
     } finally {
       ui.unmount();
     }
   });
 
-  it('reload lỗi giữ snapshot cũ + banner, restore counters (không cặp total mới + rows cũ)', async () => {
+  it('reload lỗi trong gap giữ snapshot cũ + banner, restore counters (không cặp total mới + rows cũ)', async () => {
     const ui = renderDataSource();
     try {
       await flush();
@@ -145,7 +153,10 @@ describe('useDataSource blocking: progress không publish dashboard', () => {
       });
       expect(hookState.fetches).toHaveLength(2);
       expect(ui.current.dbStatus).toBe('loading');
-      expect(ui.current.combined).toHaveLength(0);
+      // Gap chờ page đầu: vẫn hiện snapshot cũ nguyên vẹn, chưa partial.
+      expect(ui.current.combined).toHaveLength(10);
+      expect(ui.current.dbPartial).toBe(false);
+      expect(ui.current.rangeLabel).toBe(labelBefore);
       await act(async () => {
         hookState.fetches[1].reject(new Error('boom'));
       });
@@ -154,6 +165,240 @@ describe('useDataSource blocking: progress không publish dashboard', () => {
       expect(ui.current.combined).toHaveLength(10);
       expect(ui.current.rangeLabel).toBe(labelBefore);
       expect(ui.current.dbTotal).toBe(totalBefore);
+      expect(ui.current.dbPartial).toBe(false);
+    } finally {
+      ui.unmount();
+    }
+  });
+
+  it('reload lỗi SAU partial restore lastComplete (snapshot cũ), không giữ partial mới', async () => {
+    const ui = renderDataSource();
+    try {
+      await flush();
+      await act(async () => {
+        hookState.fetches[0].resolve(makeResult(Array.from({ length: 10 }, (_, i) => makeLead(i, '2026-09')), 10));
+      });
+      await act(async () => {
+        ui.current.setPreset('3m');
+      });
+      // Partial của range mới: chuyển sang rows + label MỚI + cờ partial.
+      const partialB = [makeLead(100, '2026-07'), makeLead(101, '2026-08')];
+      act(() => {
+        hookState.fetches[1].onProgress?.(2, partialB, 500);
+      });
+      expect(ui.current.combined).toHaveLength(2);
+      expect(ui.current.dbPartial).toBe(true);
+      expect(ui.current.rangeLabel).toBe('2026-07 → 2026-09');
+      await act(async () => {
+        hookState.fetches[1].reject(new Error('fail-sau-partial'));
+      });
+      // Restore nguyên bộ snapshot hoàn chỉnh A, không giữ partial B.
+      expect(ui.current.dbStatus).toBe('ready');
+      expect(ui.current.dbError).toBe('fail-sau-partial');
+      expect(ui.current.combined).toHaveLength(10);
+      expect(ui.current.rangeLabel).toBe('2026-09 → 2026-09');
+      expect(ui.current.dbTotal).toBe(10);
+      expect(ui.current.dbPartial).toBe(false);
+      // Progress muộn cùng request sau terminal bị loại, không đụng snapshot.
+      act(() => {
+        hookState.fetches[1].onProgress?.(500, partialB, 500);
+      });
+      expect(ui.current.combined).toHaveLength(10);
+      expect(ui.current.rangeLabel).toBe('2026-09 → 2026-09');
+    } finally {
+      ui.unmount();
+    }
+  });
+
+  it('S xong → A pending → B partial → B lỗi → A lỗi muộn: terminal B còn hiệu lực, progress B muộn bị loại', async () => {
+    const ui = renderDataSource();
+    try {
+      await flush();
+      // S success tạo snapshot hoàn chỉnh.
+      await act(async () => {
+        hookState.fetches[0].resolve(makeResult([makeLead(0, '2026-09')], 1));
+      });
+      // A bắt đầu, giữ pending (KHÔNG resolve/reject — promise còn sống).
+      await act(async () => {
+        ui.current.setPreset('3m');
+      });
+      // B thay thế A.
+      await act(async () => {
+        ui.current.setPreset('6m');
+      });
+      expect(hookState.fetches).toHaveLength(3);
+      // B publish partial rồi lỗi → restore S + terminal B.
+      const partialB = [makeLead(100, '2026-04')];
+      act(() => {
+        hookState.fetches[2].onProgress?.(1, partialB, 900);
+      });
+      expect(ui.current.dbPartial).toBe(true);
+      await act(async () => {
+        hookState.fetches[2].reject(new Error('B fail'));
+      });
+      expect(ui.current.dbStatus).toBe('ready');
+      expect(ui.current.combined).toHaveLength(1);
+      expect(ui.current.combined[0].submissionId).toBe('s-0');
+      expect(ui.current.rangeLabel).toBe('2026-09 → 2026-09');
+      expect(ui.current.dbError).toBe('B fail');
+      // A (pending, đã bị supersede) lỗi muộn: catch của A phải return im lặng,
+      // KHÔNG được đổi terminal của B sang A.
+      await act(async () => {
+        hookState.fetches[1].reject(new Error('A late fail'));
+      });
+      // Progress muộn của B sau terminal vẫn bị loại, snapshot S giữ nguyên.
+      act(() => {
+        hookState.fetches[2].onProgress?.(900, [makeLead(101, '2026-04')], 900);
+      });
+      expect(ui.current.combined).toHaveLength(1);
+      expect(ui.current.combined[0].submissionId).toBe('s-0');
+      expect(ui.current.rangeLabel).toBe('2026-09 → 2026-09');
+      expect(ui.current.dbPartial).toBe(false);
+      // Banner lỗi vẫn là của B (không bị A muộn ghi đè).
+      expect(ui.current.dbError).toBe('B fail');
+    } finally {
+      ui.unmount();
+    }
+  });
+
+  it('đổi preset trong lúc partial: gap của C giữ cờ chưa đủ của snapshot B', async () => {
+    const ui = renderDataSource();
+    try {
+      await flush();
+      await act(async () => {
+        hookState.fetches[0].resolve(makeResult([makeLead(0, '2026-09')], 1));
+      });
+      await act(async () => {
+        ui.current.setPreset('3m');
+      });
+      const partialB = [makeLead(100, '2026-07'), makeLead(101, '2026-08')];
+      act(() => {
+        hookState.fetches[1].onProgress?.(2, partialB, 500);
+      });
+      expect(ui.current.dbPartial).toBe(true);
+      await act(async () => {
+        ui.current.setPreset('6m');
+      });
+      // Gap của C: vẫn hiện partial B + cờ chưa đủ (loaded/total của B), không
+      // rớt về nhánh snapshot cũ gây hiểu nhầm 8.610 dòng là số đủ.
+      expect(ui.current.dbPartial).toBe(true);
+      expect(ui.current.combined).toHaveLength(2);
+      expect(ui.current.dbLoaded).toBe(2);
+      expect(ui.current.dbTotal).toBe(500);
+      expect(ui.current.rangeLabel).toBe('2026-07 → 2026-09');
+      // Page đầu C về → chuyển sang partial C.
+      const partialC = [makeLead(200, '2026-04')];
+      act(() => {
+        hookState.fetches[2].onProgress?.(1, partialC, 900);
+      });
+      expect(ui.current.dbPartial).toBe(true);
+      expect(ui.current.combined).toHaveLength(1);
+      expect(ui.current.rangeLabel).toBe('2026-04 → 2026-09');
+    } finally {
+      ui.unmount();
+    }
+  });
+  it('chuỗi chồng A xong → B partial → C lỗi: restore A, không restore partial B', async () => {
+    const ui = renderDataSource();
+    try {
+      await flush();
+      await act(async () => {
+        hookState.fetches[0].resolve(makeResult([makeLead(0, '2026-09')], 1));
+      });
+      await act(async () => {
+        ui.current.setPreset('3m');
+      });
+      const partialB = [makeLead(100, '2026-07')];
+      act(() => {
+        hookState.fetches[1].onProgress?.(1, partialB, 300);
+      });
+      expect(ui.current.dbPartial).toBe(true);
+      await act(async () => {
+        ui.current.setPreset('6m');
+      });
+      // Gap của C: vẫn hiện partial B + cờ chưa đủ của B (không rớt về nhánh
+      // snapshot cũ), nhưng lastComplete vẫn là A.
+      expect(ui.current.combined).toHaveLength(1);
+      expect(ui.current.dbPartial).toBe(true);
+      await act(async () => {
+        hookState.fetches[2].reject(new Error('C fail'));
+      });
+      expect(ui.current.dbStatus).toBe('ready');
+      expect(ui.current.combined).toHaveLength(1);
+      expect(ui.current.combined[0].submissionId).toBe('s-0');
+      expect(ui.current.rangeLabel).toBe('2026-09 → 2026-09');
+      expect(ui.current.dbPartial).toBe(false);
+    } finally {
+      ui.unmount();
+    }
+  });
+
+  it('lần đầu lỗi sau partial: clear partial, hiện lỗi + retry, KHÔNG gán ready', async () => {
+    const ui = renderDataSource();
+    try {
+      await flush();
+      expect(hookState.fetches).toHaveLength(1);
+      const partial = [makeLead(1, '2026-09')];
+      act(() => {
+        hookState.fetches[0].onProgress?.(1, partial, 700);
+      });
+      expect(ui.current.combined).toHaveLength(1);
+      await act(async () => {
+        hookState.fetches[0].reject(new Error('first fail'));
+      });
+      expect(ui.current.dbStatus).toBe('error');
+      expect(ui.current.dbError).toBe('first fail');
+      // Fix ISSUE-3 impl-REV1: partial DB bị loại khỏi hiển thị, không trình
+      // bày aggregate thiếu như số cuối.
+      expect(ui.current.combined).toHaveLength(0);
+      expect(ui.current.visibleLeads).toHaveLength(0);
+      expect(ui.current.dbPartial).toBe(false);
+      expect(ui.current.dbTotal).toBe(0);
+    } finally {
+      ui.unmount();
+    }
+  });
+
+  it('range rỗng (count = 0) là success có commit: rows rỗng + label mới + ready', async () => {
+    const ui = renderDataSource();
+    try {
+      await flush();
+      await act(async () => {
+        hookState.fetches[0].resolve(makeResult(Array.from({ length: 5 }, (_, i) => makeLead(i, '2026-09')), 5));
+      });
+      await act(async () => {
+        ui.current.setPreset('3m');
+      });
+      await act(async () => {
+        hookState.fetches[1].resolve(makeResult([], 0));
+      });
+      expect(ui.current.dbStatus).toBe('ready');
+      expect(ui.current.combined).toHaveLength(0);
+      expect(ui.current.dbTotal).toBe(0);
+      expect(ui.current.dbLoaded).toBe(0);
+      expect(ui.current.rangeLabel).toBe('2026-07 → 2026-09');
+      expect(ui.current.dbPartial).toBe(false);
+    } finally {
+      ui.unmount();
+    }
+  });
+
+  it('progress của request cũ sau khi đã đổi preset bị bỏ qua', async () => {
+    const ui = renderDataSource();
+    try {
+      await flush();
+      await act(async () => {
+        hookState.fetches[0].resolve(makeResult([makeLead(0, '2026-09')], 1));
+      });
+      await act(async () => {
+        ui.current.setPreset('3m');
+      });
+      // Progress muộn của request 1m cũ (đã supersede) không đụng state mới.
+      act(() => {
+        hookState.fetches[0].onProgress?.(99, [makeLead(9, '2026-09')], 99);
+      });
+      expect(ui.current.combined).toHaveLength(1);
+      expect(ui.current.combined[0].submissionId).toBe('s-0');
     } finally {
       ui.unmount();
     }
@@ -177,8 +422,11 @@ describe('useDataSource blocking: progress không publish dashboard', () => {
       await act(async () => {
         hookState.fetches[1].resolve(makeResult(rows3m, 2));
       });
+      // Request 3m đã supersede: giữ snapshot A, vẫn loading chờ 6m.
       expect(ui.current.dbStatus).toBe('loading');
-      expect(ui.current.combined).toHaveLength(0);
+      expect(ui.current.combined).toHaveLength(1);
+      expect(ui.current.combined[0].submissionId).toBe('s-0');
+      expect(ui.current.rangeLabel).toBe('2026-09 → 2026-09');
       const rows6m = [makeLead(3, '2026-04')];
       await act(async () => {
         hookState.fetches[2].resolve(makeResult(rows6m, 1));

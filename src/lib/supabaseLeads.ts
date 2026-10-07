@@ -134,6 +134,9 @@ export function assignDuplicates(leads: Lead[]): Lead[] {
 
 const PAGE = 1000;
 
+/** Số page fetch song song trong 1 batch (cân bằng tốc độ / spike request). */
+const PAGE_CONCURRENCY = 6;
+
 export interface RangeFetchResult {
   rows: Lead[];
   /** Tổng dòng server-side (count exact) — hiển thị header, KHÔNG phải rows.length. */
@@ -205,9 +208,16 @@ function resolveDateFilter(
  * và làm lệch tier (parity AC6).
  * Dừng loop theo totalCount (count exact), KHÔNG dùng `data.length < PAGE`
  * làm điều kiện duy nhất — PostgREST cap nhỏ hơn PAGE sẽ dừng sớm (bug 1000).
- * onProgress(loaded, leadsSoFar, total) chỉ để consumer hiện progress counters;
- * consumer blocking (useDataSource) KHÔNG set leads giữa chừng — commit 1 lần
- * khi đủ range. Preset 'custom' bắt buộc có monthFrom/monthTo (từ applied). */
+ * Progressive (tang-toc-load-hien-ngay): page 0 fetch riêng rồi publish ngay
+ * (first paint), các page còn lại fetch song song theo batch PAGE_CONCURRENCY.
+ * Chỉ publish prefix LIÊN TỤC từ page 0 theo `seq` — page về sớm ngoài prefix
+ * (vd có page 0+3 mà thiếu 1-2) thì giữ lại, chưa publish. Mỗi lần publish chạy
+ * lại `assignDuplicates` trên toàn bộ prefix. `totalCount === 0` là success rỗng
+ * (không fetch page). `totalCount > 0` mà page đầu rỗng là không nhất quán
+ * (count/page lệch do dữ liệu đổi giữa các query) → throw để consumer restore.
+ * onProgress(loaded, leadsSoFar, total) để consumer commit dần có guard;
+ * consumer KHÔNG được coi partial là số cuối (chỉ `ready` mới là số cuối).
+ * Preset 'custom' bắt buộc có monthFrom/monthTo (từ applied). */
 export async function fetchLeadsByRange(
   options: {
     preset: RangePreset;
@@ -219,8 +229,9 @@ export async function fetchLeadsByRange(
   onProgress?: (loaded: number, leadsSoFar: Lead[], total: number) => void,
 ): Promise<RangeFetchResult> {
   const { preset } = options;
-  const client = supabaseClient();
-  if (!client) throw new Error('Supabase chưa cấu hình (thiếu VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)');
+  const supabase = supabaseClient();
+  if (!supabase) throw new Error('Supabase chưa cấu hình (thiếu VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)');
+  const client = supabase;
   const anchorIso = options.anchorIso ?? (await fetchRangeAnchor()).maxSubmittedAtTs;
   // Pre-migration (hoặc DB toàn dòng không ngày): không anchor thì không lọc
   // server được (WHERE cột chưa tồn tại sẽ lỗi). Preset chuẩn fallback về
@@ -261,32 +272,74 @@ export async function fetchLeadsByRange(
     undatedCount = undated ?? 0;
   }
 
-  const all: PublicLeadRow[] = [];
+  const pageCount = Math.ceil(totalCount / PAGE);
+  const pages: Array<PublicLeadRow[] | null> = new Array(pageCount).fill(null);
+  let publishedPrefix = 0;
   let leadsSoFar: Lead[] = [];
-  if (totalCount > 0) {
-    for (let from = 0; from < totalCount; from += PAGE) {
-      let pageQuery = client
-        .from('leads_public')
-        .select('*')
-        .order('seq', { ascending: true, nullsFirst: true })
-        .range(from, Math.min(from + PAGE - 1, totalCount - 1));
-      pageQuery = applyDateFilter(
-        pageQuery,
-        filter,
-        (q, col, v) => q.gte(col, v),
-        (q, col, v) => q.lt(col, v),
+
+  async function fetchPage(index: number): Promise<void> {
+    const from = index * PAGE;
+    const to = Math.min(from + PAGE - 1, totalCount - 1);
+    let pageQuery = client
+      .from('leads_public')
+      .select('*')
+      .order('seq', { ascending: true, nullsFirst: true })
+      .range(from, to);
+    pageQuery = applyDateFilter(
+      pageQuery,
+      filter,
+      (q, col, v) => q.gte(col, v),
+      (q, col, v) => q.lt(col, v),
+    );
+    const { data, error } = await pageQuery;
+    if (error) throw new Error(`Supabase read failed: ${error.message}`);
+    const expected = to - from + 1;
+    if (!data || data.length === 0) {
+      throw new Error(
+        `Supabase read inconsistent: totalCount=${totalCount} nhưng page ${index} rỗng (dữ liệu đổi giữa các query)`,
       );
-      const { data, error } = await pageQuery;
-      if (error) throw new Error(`Supabase read failed: ${error.message}`);
-      if (!data || data.length === 0) break;
-      all.push(...(data as PublicLeadRow[]));
-      // Dữ liệu giữ file-order (seq) nên earliest của mỗi contact_group đứng trước.
-      // Re-assign duplicates trên toàn bộ đã tải để page đầu hiện đúng ngay.
-      leadsSoFar = assignDuplicates(all.map(publicRowToLead));
-      onProgress?.(all.length, leadsSoFar, totalCount);
+    }
+    // Fix ISSUE-4 impl-REV1: page thiếu (không rỗng vẫn sai) cũng throw — nếu
+    // không success sẽ chốt thiếu rows mà total vẫn đủ (2.499/2.500).
+    if (data.length !== expected) {
+      throw new Error(
+        `Supabase read inconsistent: page ${index} chỉ có ${data.length}/${expected} dòng (totalCount=${totalCount}, dữ liệu đổi giữa các query)`,
+      );
+    }
+    pages[index] = data as PublicLeadRow[];
+    // Chỉ publish prefix liên tục từ page 0: page về sớm ngoài prefix thì giữ
+    // lại chờ. Publish lại toàn bộ prefix + re-assign duplicates mỗi lần.
+    let end = publishedPrefix;
+    while (end < pageCount && pages[end] !== null) end += 1;
+    if (end === publishedPrefix) return;
+    publishedPrefix = end;
+    const rows: PublicLeadRow[] = [];
+    for (let i = 0; i < end; i += 1) rows.push(...(pages[i] as PublicLeadRow[]));
+    // Dữ liệu giữ file-order (seq) nên earliest của mỗi contact_group đứng trước.
+    leadsSoFar = assignDuplicates(rows.map(publicRowToLead));
+    onProgress?.(rows.length, leadsSoFar, totalCount);
+  }
+
+  if (totalCount > 0) {
+    // Page 0 riêng để first paint nhanh nhất; còn lại song song theo batch.
+    await fetchPage(0);
+    for (let start = 1; start < pageCount; start += PAGE_CONCURRENCY) {
+      const batch: Array<Promise<void>> = [];
+      for (let i = start; i < Math.min(start + PAGE_CONCURRENCY, pageCount); i += 1) {
+        batch.push(fetchPage(i));
+      }
+      await Promise.all(batch);
     }
   }
-  return { rows: leadsSoFar, totalCount, loadedCount: all.length, rangePreset: effectivePreset, undatedCount };
+  const finalLoaded = pages.reduce((n, p) => n + (p?.length ?? 0), 0);
+  // Đai an toàn cuối: tổng rows phải đúng totalCount mới là success (chặn page
+  // thiếu lọt qua khi mock/server trả sai kích thước range).
+  if (finalLoaded !== totalCount) {
+    throw new Error(
+      `Supabase read inconsistent: chỉ tải ${finalLoaded}/${totalCount} dòng (dữ liệu đổi giữa các query)`,
+    );
+  }
+  return { rows: leadsSoFar, totalCount, loadedCount: finalLoaded, rangePreset: effectivePreset, undatedCount };
 }
 
 /** Giữ tương thích code cũ: full-load qua preset 'all' (count exact + loop theo total). */

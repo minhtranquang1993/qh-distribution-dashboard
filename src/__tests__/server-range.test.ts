@@ -331,6 +331,123 @@ describe('fetchLeadsByRange: dừng theo totalCount, header phân biệt total/l
       fetchLeadsByRange({ preset: 'custom', anchorIso: '2026-09-15T10:00:00+07:00' }),
     ).rejects.toThrow(/thiếu monthFrom\/monthTo/);
   });
+
+  it('progressive: page 0 publish trước, final đủ + dedupe đúng qua ranh giới page', async () => {
+    const rows: PublicLeadRow[] = [];
+    for (let i = 0; i < 2500; i += 1) {
+      rows.push(makeRow(i, `2026-09-${String((i % 28) + 1).padStart(2, '0')}T10:00:00+07:00`, '2026-09'));
+    }
+    // Contact trùng qua ranh giới page 0/1 (seq 999-1000) và 1/2 (1999-2000).
+    rows[1000].contact_group = rows[999].contact_group;
+    rows[2000].contact_group = rows[1999].contact_group;
+    mockState.client = createMockClient(rows);
+    const { fetchLeadsByRange } = await import('@/lib/supabaseLeads');
+    const progress: Array<{ loaded: number; total: number; rows: number }> = [];
+    const result = await fetchLeadsByRange({ preset: 'all' }, (loaded, leads, total) => {
+      progress.push({ loaded, total, rows: leads.length });
+    });
+    // First paint sau page 0, không chờ đủ 2500.
+    expect(progress[0]).toMatchObject({ loaded: 1000, total: 2500, rows: 1000 });
+    // Mọi snapshot progressive đều là prefix liên tục: loaded tăng đơn điệu,
+    // không vượt total, snapshot cuối khớp total.
+    for (let i = 1; i < progress.length; i += 1) {
+      expect(progress[i].loaded).toBeGreaterThan(progress[i - 1].loaded);
+      expect(progress[i].loaded).toBeLessThanOrEqual(2500);
+    }
+    expect(result.totalCount).toBe(2500);
+    expect(result.loadedCount).toBe(2500);
+    expect(result.rows.length).toBe(2500);
+    // Dedupe qua ranh giới: dòng đầu của group giữ false, dòng sau true.
+    const dup999 = result.rows.find((l) => l.submissionId === 's-999');
+    const dup1000 = result.rows.find((l) => l.submissionId === 's-1000');
+    expect(dup999?.isDuplicate).toBe(false);
+    expect(dup1000?.isDuplicate).toBe(true);
+    const dup1999 = result.rows.find((l) => l.submissionId === 's-1999');
+    const dup2000 = result.rows.find((l) => l.submissionId === 's-2000');
+    expect(dup1999?.isDuplicate).toBe(false);
+    expect(dup2000?.isDuplicate).toBe(true);
+  });
+
+  it('page thiếu nhưng không rỗng (kể cả page cuối) thì throw inconsistent', async () => {
+    const rows: PublicLeadRow[] = [];
+    for (let i = 0; i < 2500; i += 1) {
+      rows.push(makeRow(i, `2026-09-${String((i % 28) + 1).padStart(2, '0')}T10:00:00+07:00`, '2026-09'));
+    }
+    // Giả lập dữ liệu đổi giữa count và page: page cuối thiếu 1 dòng.
+    const shortRows = rows.slice(0, 2499);
+    mockState.client = createMockClient(shortRows);
+    const { fetchLeadsByRange } = await import('@/lib/supabaseLeads');
+    // count = 2499 nhưng mock vẫn paging đúng — ép totalCount 2500 bằng cách
+    // giữ nguyên rows: ở đây count thật 2499 nên success 2499/2499 (đúng).
+    // Để tái hiện thiếu page, dùng client báo count sai lệch:
+    const lyingClient = {
+      from() {
+        const inner = createMockClient(shortRows);
+        const base = inner.from('leads_public') as unknown as Record<string, (...a: never[]) => unknown>;
+        let isHead = false;
+        const wrapped: Record<string, unknown> = {
+          select: (cols: string, opts?: { count?: string; head?: boolean }) => {
+            isHead = Boolean(opts?.head);
+            (base.select as (c: string, o?: object) => unknown)(cols, opts);
+            return wrapped;
+          },
+        };
+        for (const k of ['not', 'is', 'gte', 'lt', 'order', 'limit', 'range'] as const) {
+          (wrapped as Record<string, unknown>)[k] = (...args: never[]) => {
+            (base[k] as (...a: never[]) => unknown)(...args);
+            return wrapped;
+          };
+        }
+        (wrapped as Record<string, unknown>).then = (
+          onFulfilled?: (v: unknown) => unknown,
+          onRejected?: (e: unknown) => unknown,
+        ) =>
+          ((base as unknown as { then: (a?: unknown, b?: unknown) => Promise<unknown> }).then(
+            (v: unknown) => {
+              const r = v as { count?: number; data?: unknown[]; error: null };
+              if (isHead && typeof r.count === 'number') return onFulfilled?.({ count: r.count + 1, error: null });
+              return onFulfilled?.(v);
+            },
+            onRejected,
+          ) as Promise<unknown>);
+        return wrapped;
+      },
+    };
+    mockState.client = lyingClient;
+    await expect(fetchLeadsByRange({ preset: 'all' })).rejects.toThrow(/inconsistent/);
+  });
+
+  it('count > 0 mà page đầu rỗng thì throw inconsistent (không kết luận rỗng)', async () => {
+    // Count báo 5 nhưng mọi page data đều rỗng → không nhất quán.
+    const inconsistentClient = {
+      from() {
+        const api: Record<string, unknown> = {};
+        let isHead = false;
+        api.select = (_cols: string, opts?: { count?: string; head?: boolean }) => {
+          isHead = Boolean(opts?.head);
+          return api;
+        };
+        api.not = () => api;
+        api.is = () => api;
+        api.gte = () => api;
+        api.lt = () => api;
+        api.order = () => api;
+        api.limit = () => api;
+        api.range = () => api;
+        (api as { then: (a?: (v: unknown) => unknown, b?: (e: unknown) => unknown) => Promise<unknown> }).then = (
+          onFulfilled?: (v: unknown) => unknown,
+          onRejected?: (e: unknown) => unknown,
+        ) => {
+          const result = isHead ? { count: 5, error: null } : { data: [], error: null };
+          return Promise.resolve(result).then(onFulfilled, onRejected);
+        };
+        return api;
+      },
+    };
+    mockState.client = inconsistentClient;
+    const { fetchLeadsByRange } = await import('@/lib/supabaseLeads');
+    await expect(fetchLeadsByRange({ preset: 'all' })).rejects.toThrow(/inconsistent/);
+  });
 });
 
 describe('isCustomDraftValid: draft/applied tách bạch', () => {

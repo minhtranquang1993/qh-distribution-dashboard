@@ -60,10 +60,12 @@ export default function App() {
   };
 
   const ready = base.length > 0;
-  // Blocking render: loading server-range thì ẩn dashboard (kể cả đã có rows
-  // cũ), hiện skeleton — không bao giờ cặp rows cũ + label mới.
+  // Progressive (tang-toc-load-hien-ngay): có rows là hiện dashboard ngay, kể
+  // cả đang loading (gap giữ snapshot cũ hoặc partial mới). Skeleton chỉ khi
+  // loading mà chưa có gì để hiện (lần đầu chưa snapshot).
   const serverLoading = data.dbStatus === 'loading';
-  const showDashboard = ready && !serverLoading;
+  const showDashboard = ready;
+  const showSkeleton = serverLoading && !ready;
   const filteredNote = isFiltered(filter) ? 'trên bộ lọc hiện tại' : undefined;
 
   return (
@@ -85,7 +87,12 @@ export default function App() {
           <div className="card space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm text-slate-300">
-              {data.dbStatus === 'loading' && `Đang tải Supabase… ${data.dbLoaded.toLocaleString('vi-VN')}${data.dbTotal > 0 ? `/${data.dbTotal.toLocaleString('vi-VN')}` : ''} dòng`}
+              {data.dbStatus === 'loading' &&
+                (data.dbPartial
+                  ? `Đang tải ${data.dbLoaded.toLocaleString('vi-VN')}${data.dbTotal > 0 ? `/${data.dbTotal.toLocaleString('vi-VN')}` : ''} dòng${data.rangeLabel ? ` (${data.rangeLabel})` : ''} — số liệu chưa đủ, sẽ cập nhật tiếp`
+                  : ready
+                    ? `Supabase: ${data.dbTotal.toLocaleString('vi-VN')} dòng${data.rangeLabel ? ` (${data.rangeLabel})` : ' trong DB'} · Đang tải khoảng mới…`
+                    : `Đang tải Supabase… ${data.dbLoaded.toLocaleString('vi-VN')}${data.dbTotal > 0 ? `/${data.dbTotal.toLocaleString('vi-VN')}` : ''} dòng`)}
               {data.dbStatus === 'ready' &&
                 `Supabase: ${data.dbTotal.toLocaleString('vi-VN')} dòng${data.rangeLabel ? ` (${data.rangeLabel})` : ' trong DB'}`}
               {data.dbUndated > 0 && data.dbStatus === 'ready' && (
@@ -184,10 +191,18 @@ export default function App() {
           </p>
         )}
 
-        {serverLoading ? (
+        {showSkeleton ? (
           <DashboardSkeleton loaded={data.dbLoaded} total={data.dbTotal} />
         ) : showDashboard ? (
           <>
+            {serverLoading && data.dbPartial && (
+              <p className="rounded-md bg-sky-500/10 px-3 py-2 text-xs text-sky-300">
+                Đang tải thêm dữ liệu cho {data.rangeLabel ?? 'khoảng đã chọn'} (
+                {data.dbLoaded.toLocaleString('vi-VN')}
+                {data.dbTotal > 0 ? `/${data.dbTotal.toLocaleString('vi-VN')}` : ''} dòng) — số
+                liệu bên dưới chưa đủ, sẽ tự cập nhật.
+              </p>
+            )}
             <FilterBar filter={filter} onChange={setFilter} total={base.length} filtered={filtered.length} />
 
             <nav className="flex flex-wrap gap-1 border-b border-slate-800 pb-2">
