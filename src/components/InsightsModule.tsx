@@ -14,14 +14,13 @@ import {
   creativeMatrix,
   geoSegments,
   groupSegments,
-  leadsForMode,
   mediumSegments,
   pct,
   sourceSegments,
   typeCompanySegments,
 } from '@/lib/metrics';
 import { actionDimensionToDrill } from '@/lib/drill';
-import type { Lead, MetricMode } from '@/types/lead';
+import type { Lead } from '@/types/lead';
 import type { Drill } from '@/lib/drill';
 import { Card, ConfidenceBadge } from '@/components/ui';
 
@@ -52,17 +51,15 @@ function ClickableSegment({
 /** P1 — Insights: giữ engine buildActionBoard, trình bày 3 card click-drill được. */
 export function InsightsModule({
   leads,
-  mode,
   onDrill,
   filteredNote,
 }: {
   leads: Lead[];
-  mode: MetricMode;
   onDrill?: (drill: Drill) => void;
   filteredNote?: string;
 }) {
   const { scale, risks, tracking } = useMemo(() => {
-    const base = leadsForMode(leads, mode);
+    const base = leads;
     const items = buildActionBoard({
       leads: base,
       sourceSegments: sourceSegments(base),
@@ -78,7 +75,7 @@ export function InsightsModule({
       .slice(0, 8);
     const trackingTop = items.filter((i) => i.action === 'Fix Tracking').slice(0, 5);
     return { scale: scaleTop, risks: risksTop, tracking: trackingTop };
-  }, [leads, mode]);
+  }, [leads]);
 
   const chartData = useMemo(
     () =>
@@ -248,8 +245,8 @@ export function SegmentTable({
 }
 
 /** Creative dạng top-combo + bar thay vì ma trận chữ thuần. */
-export function CreativeTopModule({ leads, mode, onDrill }: { leads: Lead[]; mode: MetricMode; onDrill?: (d: Drill) => void }) {
-  const cells = useMemo(() => creativeMatrix(leadsForMode(leads, mode)).slice(0, 12), [leads, mode]);
+export function CreativeTopModule({ leads, onDrill }: { leads: Lead[]; onDrill?: (d: Drill) => void }) {
+  const cells = useMemo(() => creativeMatrix(leads).slice(0, 12), [leads]);
   return (
     <SegmentTable
       title="Creative — top combo term × content"

@@ -77,7 +77,7 @@ function basisOf(value: string): Lead['attributionBasis'] {
 /**
  * Map 1 dòng leads_public → Lead. PII để trống (anon không bao giờ thấy).
  * leadKey = contact_group (UUID ngẫu nhiên theo contact trong batch):
- * đủ để uniqueContacts/dedupe chạy đúng mà không lộ hash PII.
+ * đủ để dedupe/scoring gate chạy đúng mà không lộ hash PII.
  */
 export function publicRowToLead(row: PublicLeadRow): Lead {
   return {

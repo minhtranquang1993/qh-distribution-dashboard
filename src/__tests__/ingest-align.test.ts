@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import Papa from 'papaparse';
 import { transformRows } from '@/lib/transform';
 import { sanitizeUrlQuery, sanitizeUtmSet } from '@/lib/sanitizeUrlQuery';
@@ -7,7 +8,7 @@ import { dedupeForSave, saveKeyOf } from '@/lib/ingestApi';
 import type { RawRow } from '@/types/raw';
 import type { RawPassthrough } from '@/workers/messages';
 
-const SAMPLE_CSV = new URL('../../public/sample.csv', import.meta.url).pathname;
+const SAMPLE_CSV = fileURLToPath(new URL('../../public/sample.csv', import.meta.url));
 
 /** Copy logic trích raw của csvParser.worker.ts (dev, noPii=false). */
 function extractRaw(collected: RawRow[], noPii: boolean): RawPassthrough[] {
@@ -113,7 +114,7 @@ describe('sanitizeUrlQuery: value-level PII scrub (mirror function)', () => {
 
   it('bản function vẫn chứa scrub value-level (chống drift)', () => {
     const src = readFileSync(
-      new URL('../../supabase/functions/ingest-leads/index.ts', import.meta.url).pathname,
+      fileURLToPath(new URL('../../supabase/functions/ingest-leads/index.ts', import.meta.url)),
       'utf-8',
     );
     expect(src).toContain('EMAIL_IN_VALUE');
@@ -176,7 +177,7 @@ describe('sanitizeUtmSet: scrub PII trong utm JSON (cột public)', () => {
 
   it('seed script dùng chung sanitizer (chống drift function-only)', () => {
     const src = readFileSync(
-      new URL('../../scripts/import-to-supabase.ts', import.meta.url).pathname,
+      fileURLToPath(new URL('../../scripts/import-to-supabase.ts', import.meta.url)),
       'utf-8',
     );
     expect(src).toContain('sanitizeUtmSet');

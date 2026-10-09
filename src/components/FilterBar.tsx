@@ -78,7 +78,7 @@ export function FilterBar({
         )}
       </div>
       <p className="text-xs text-slate-500">
-        n={filtered.toLocaleString('vi-VN')}/{total.toLocaleString('vi-VN')} contacts
+        n={filtered.toLocaleString('vi-VN')}/{total.toLocaleString('vi-VN')} lead
         {activeFilterLabels(filter).length > 0 && (
           <> · đang lọc: {activeFilterLabels(filter).join(' · ')}</>
         )}

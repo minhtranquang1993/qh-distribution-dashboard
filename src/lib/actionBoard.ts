@@ -62,9 +62,15 @@ function decide(stats: SegmentStats): { action: ActionBucket; reason: string } {
   }
 
   if (duplicateRate > 0.3 || spamRate > 0.2) {
+    if (spamRate > 0.2) {
+      return {
+        action: 'Cut/Exclude',
+        reason: `Rác ${(spamRate * 100).toFixed(0)}% — loại khỏi target`,
+      };
+    }
     return {
       action: 'Cut/Exclude',
-      reason: `Trùng ${(duplicateRate * 100).toFixed(0)}%, rác ${(spamRate * 100).toFixed(0)}% — loại khỏi target`,
+      reason: 'Chất lượng thấp — loại khỏi target',
     };
   }
 
@@ -78,7 +84,7 @@ function decide(stats: SegmentStats): { action: ActionBucket; reason: string } {
   if (mqlRate >= 0.18 && n >= MIN_N_ACTIONABLE) {
     return {
       action: 'Scale',
-      reason: `MQL rate ${(mqlRate * 100).toFixed(1)}% trên ${n} contact — ứng viên scale`,
+      reason: `MQL rate ${(mqlRate * 100).toFixed(1)}% trên ${n} lead — ứng viên scale`,
     };
   }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import Papa from 'papaparse';
 import { transformRows } from '@/lib/transform';
 import { applyFilters, EMPTY_FILTER, monthKeyOf } from '@/lib/cohort';
@@ -9,7 +10,7 @@ import { assignDuplicates, publicRowToLead, type PublicLeadRow } from '@/lib/sup
 import type { RawRow } from '@/types/raw';
 import type { Lead } from '@/types/lead';
 
-const SAMPLE_CSV = new URL('../../public/sample.csv', import.meta.url).pathname;
+const SAMPLE_CSV = fileURLToPath(new URL('../../public/sample.csv', import.meta.url));
 
 function readSample(): RawRow[] {
   const text = readFileSync(SAMPLE_CSV, 'utf-8');
@@ -72,7 +73,7 @@ describe('AC6 parity CSV = Supabase', () => {
     const before = overview(leads);
     const after = overview(roundTripped);
     expect(after.totalSubmissions).toBe(before.totalSubmissions);
-    expect(after.uniqueContacts).toBe(before.uniqueContacts);
+    expect(after.totalLeads).toBe(before.totalLeads);
     expect(after.mqlCount).toBe(before.mqlCount);
     expect(after.mqlRate).toBeCloseTo(before.mqlRate, 10);
 

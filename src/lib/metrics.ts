@@ -1,10 +1,9 @@
 /**
- * Aggregation layer. Every ranking function defaults to unique contacts so
- * repeat submitters cannot inflate a channel's apparent quality.
+ * Aggregation layer. Every ranking function counts each submission as one lead.
  */
 
 import { BUDGET_ORDER, isHighBudget } from '@/lib/scoring';
-import type { Lead, MetricMode } from '@/types/lead';
+import type { Lead } from '@/types/lead';
 
 /** Minimum sample before a segment is treated as actionable. */
 export const MIN_N_ACTIONABLE = 100;
@@ -38,57 +37,14 @@ export function pct(value: number, digits = 1): string {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
-/** One row per distinct contact; earliest submission wins. */
-export function uniqueContacts(leads: Lead[]): Lead[] {
-  const seen = new Set<string>();
-  const out: Lead[] = [];
-  for (const lead of leads) {
-    if (seen.has(lead.leadKey)) continue;
-    seen.add(lead.leadKey);
-    out.push(lead);
-  }
-  return out;
+/** Guarded percent-of-total for UI tooltips: empty cohort renders 0.0%, never NaN. */
+export function pctOf(value: number, total: number, digits = 1): string {
+  return pct(total === 0 ? 0 : value / total, digits);
 }
 
-/** One row per repeat submitter, with their submission count and first-seen date. */
-export interface DuplicateGroup {
-  leadKey: string;
-  count: number;
-  /** Representative lead — the earliest submission for that contact. */
-  lead: Lead;
-}
-
-/**
- * Collapse each contact that submitted more than once into a single row carrying
- * its repeat count, so "how many resubmitted" and "by how much" are both visible.
- * Falls back to the single representative lead when n=1 so downstream tables
- * never receive an empty group.
- */
-export function duplicateGroups(leads: Lead[]): DuplicateGroup[] {
-  const first = new Map<string, Lead>();
-  const counts = new Map<string, number>();
-  for (const lead of leads) {
-    if (!first.has(lead.leadKey)) first.set(lead.leadKey, lead);
-    counts.set(lead.leadKey, (counts.get(lead.leadKey) ?? 0) + 1);
-  }
-  return [...first.entries()]
-    .map(([leadKey, lead]) => ({ leadKey, count: counts.get(leadKey) ?? 1, lead }))
-    .sort((a, b) => b.count - a.count);
-}
-
-/**
- * Resolve the lead set a view should use for the selected denominator.
- * `dupe_groups` keeps only contacts that actually resubmitted, each collapsed to
- * one row, so the view answers "who repeats" rather than "how many rows".
- */
-export function leadsForMode(leads: Lead[], mode: MetricMode): Lead[] {
-  if (mode === 'raw') return leads;
-  if (mode === 'dupe_groups') {
-    return duplicateGroups(leads)
-      .filter((group) => group.count > 1)
-      .map((group) => group.lead);
-  }
-  return uniqueContacts(leads);
+/** Tooltip label factory for funnel/budget charts sharing the guarded percent. */
+export function makeShareLabel(total: number) {
+  return (value: number) => [`${value.toLocaleString('vi-VN')} (${pctOf(value, total)})`, 'Số lượng'] as const;
 }
 
 function hasTracking(lead: Lead): boolean {
@@ -240,14 +196,12 @@ export function budgetMix(leads: Lead[]): BudgetMix[] {
 }
 
 export interface OverviewStats {
+  totalLeads: number;
   totalSubmissions: number;
-  uniqueContacts: number;
   mqlCount: number;
   mqlRate: number;
   highBudgetCount: number;
   highBudgetRate: number;
-  duplicateContacts: number;
-  duplicateRate: number;
   geoMismatchRate: number;
   spamRate: number;
   attributionCoverage: { basis: string; n: number; share: number }[];
@@ -256,31 +210,28 @@ export interface OverviewStats {
 }
 
 export function overview(leads: Lead[]): OverviewStats {
-  const unique = uniqueContacts(leads);
-  const repeatContacts = duplicateGroups(leads).filter((group) => group.count > 1).length;
+  const total = leads.length;
   const basisCounts = new Map<string, number>();
-  for (const lead of unique) {
+  for (const lead of leads) {
     basisCounts.set(lead.attributionBasis, (basisCounts.get(lead.attributionBasis) ?? 0) + 1);
   }
   const tierCounts: Record<string, number> = {};
-  for (const lead of unique) {
+  for (const lead of leads) {
     tierCounts[lead.tier] = (tierCounts[lead.tier] ?? 0) + 1;
   }
   return {
-    totalSubmissions: leads.length,
-    uniqueContacts: unique.length,
+    totalLeads: total,
+    totalSubmissions: total,
     mqlCount: tierCounts.MQL ?? 0,
-    mqlRate: rate(tierCounts.MQL ?? 0, unique.length),
-    highBudgetCount: unique.filter((l) => isHighBudget(l.budgetBucket)).length,
-    highBudgetRate: rate(unique.filter((l) => isHighBudget(l.budgetBucket)).length, unique.length),
-    duplicateContacts: repeatContacts,
-    duplicateRate: rate(repeatContacts, unique.length),
-    geoMismatchRate: rate(unique.filter((l) => l.geoMismatch).length, unique.length),
-    spamRate: rate(unique.filter((l) => l.spamSignals.length > 0).length, unique.length),
+    mqlRate: rate(tierCounts.MQL ?? 0, total),
+    highBudgetCount: leads.filter((l) => isHighBudget(l.budgetBucket)).length,
+    highBudgetRate: rate(leads.filter((l) => isHighBudget(l.budgetBucket)).length, total),
+    geoMismatchRate: rate(leads.filter((l) => l.geoMismatch).length, total),
+    spamRate: rate(leads.filter((l) => l.spamSignals.length > 0).length, total),
     attributionCoverage: [...basisCounts.entries()]
-      .map(([basis, n]) => ({ basis, n, share: rate(n, unique.length) }))
+      .map(([basis, n]) => ({ basis, n, share: rate(n, total) }))
       .sort((a, b) => b.n - a.n),
-    trackingCoverage: rate(unique.filter(hasTracking).length, unique.length),
+    trackingCoverage: rate(leads.filter(hasTracking).length, total),
     tierCounts,
   };
 }

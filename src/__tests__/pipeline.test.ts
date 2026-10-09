@@ -1,14 +1,39 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import Papa from 'papaparse';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { transformRows } from '@/lib/transform';
 import { digestKey } from '@/lib/normalize';
-import { overview, uniqueContacts, duplicateGroups, leadsForMode } from '@/lib/metrics';
+import { brandDemand, budgetMix, makeShareLabel, overview, pctOf, typeBudgetMatrix } from '@/lib/metrics';
 import { buildActionBoard } from '@/lib/actionBoard';
-import { groupSegments, sourceSegments, mediumSegments, typeCompanySegments, geoSegments } from '@/lib/metrics';
+import { creativeMatrix, groupSegments, monthlyTrend, sourceSegments, mediumSegments, typeCompanySegments, geoSegments } from '@/lib/metrics';
+import { AcquireGroup, QualityGroup } from '@/components/Groups';
+import { LeadsModule } from '@/components/LeadsModule';
+import { OverviewNew } from '@/components/OverviewNew';
+import { TrendModule } from '@/components/TrendModule';
 import type { RawRow } from '@/types/raw';
 
-const SAMPLE_CSV = new URL('../../public/sample.csv', import.meta.url).pathname;
+// Recharts đo DOM khi render thật — mock ở ranh giới chart, giữ data + formatter nguyên.
+vi.mock('recharts', () => {
+  const stub = ({ children }: { children?: React.ReactNode }) => createElement('div', null, children);
+  return {
+    Bar: stub,
+    BarChart: stub,
+    Area: stub,
+    AreaChart: stub,
+    CartesianGrid: stub,
+    Cell: stub,
+    ResponsiveContainer: stub,
+    Tooltip: ({ formatter }: { formatter?: (value: number) => readonly [string, string] }) =>
+      createElement('div', { 'data-formatter': formatter ? 'share-label' : 'none' }),
+    XAxis: stub,
+    YAxis: stub,
+  };
+});
+
+const SAMPLE_CSV = fileURLToPath(new URL('../../public/sample.csv', import.meta.url));
 
 function readSample(): RawRow[] {
   const text = readFileSync(SAMPLE_CSV, 'utf-8');
@@ -77,13 +102,11 @@ describe('transformRows', () => {
   });
 });
 
-describe('dedupe semantics', () => {
-  it('collapses repeated contacts but keeps every raw submission', async () => {
+describe('duplicate flags (scoring input, not a denominator)', () => {
+  it('keeps every submission as one lead', async () => {
     const { leads } = await transformRows(readSample());
-    const unique = uniqueContacts(leads);
-    expect(unique.length).toBeLessThanOrEqual(leads.length);
-    expect(leadsForMode(leads, 'raw')).toHaveLength(leads.length);
-    expect(leadsForMode(leads, 'unique')).toHaveLength(unique.length);
+    const stats = overview(leads);
+    expect(stats.totalLeads).toBe(leads.length);
   });
 
   it('marks the second and later submissions from the same contact as duplicates', async () => {
@@ -93,12 +116,11 @@ describe('dedupe semantics', () => {
     const { leads } = await transformRows(rows);
     expect(leads[0].isDuplicate).toBe(false);
     expect(leads[1].isDuplicate).toBe(true);
-    const repeats = duplicateGroups(leads).filter((g) => g.count > 1);
-    expect(repeats).toHaveLength(1);
-    expect(repeats[0].count).toBe(2);
+    expect(leads[0].leadKey).toBe(leads[1].leadKey);
+    expect(leads[1].duplicateCount).toBe(2);
   });
 
-  it('resolves the dupe_groups denominator to one row per repeat submitter', async () => {
+  it('counts every submission even when contacts repeat', async () => {
     const rows = readSample().slice(0, 6).map((r) => ({ ...r }));
     // Three contacts: A submits twice, B three times, C once.
     rows[1].Email = rows[0].Email;
@@ -108,43 +130,32 @@ describe('dedupe semantics', () => {
     rows[5].Email = 'solo@example.com';
     const { leads } = await transformRows(rows);
 
-    const raw = leadsForMode(leads, 'raw');
-    const unique = leadsForMode(leads, 'unique');
-    const groups = leadsForMode(leads, 'dupe_groups');
-
-    expect(raw).toHaveLength(6);
-    expect(unique).toHaveLength(3);
-    // Only the two repeat submitters remain, each collapsed to a single row.
-    expect(groups).toHaveLength(2);
-    expect(new Set(groups.map((l) => l.leadKey)).size).toBe(2);
+    // 1 submission = 1 lead: no collapsing by contact.
+    expect(leads).toHaveLength(6);
+    expect(overview(leads).totalLeads).toBe(6);
   });
 
-  it('gives the surviving unique row its final group size, not a streaming count', async () => {
+  it('gives each lead its contact final group size, not a streaming count', async () => {
     const rows = readSample().slice(0, 4).map((r) => ({ ...r }));
     // One contact submits three times; the others submit once each.
     rows[1].Email = rows[0].Email;
     rows[2].Email = rows[0].Email;
     const { leads } = await transformRows(rows);
 
-    const unique = leadsForMode(leads, 'unique');
-    const repeater = unique.find((l) => l.leadKey === leads[0].leadKey)!;
-    // uniqueContacts keeps the earliest submission, which is also the isDuplicate=false
-    // one — a single streaming pass would leave this stuck at 1.
-    expect(repeater.isDuplicate).toBe(false);
+    const repeater = leads.find((l) => l.leadKey === leads[0].leadKey && !l.isDuplicate)!;
+    // A single streaming pass would leave this stuck at 1.
     expect(repeater.duplicateCount).toBe(3);
   });
 
-  it('reports a non-zero duplicate rate in the default unique denominator', async () => {
+  it('counts resubmits in the submissions denominator', async () => {
     const rows = readSample().slice(0, 4).map((r) => ({ ...r }));
     rows[1].Email = rows[0].Email;
     rows[2].Email = rows[0].Email;
     const { leads } = await transformRows(rows);
 
-    const base = leadsForMode(leads, 'unique');
-    const segments = groupSegments(base, () => 'all');
+    const segments = groupSegments(leads, () => 'all');
     expect(segments).toHaveLength(1);
-    // 1 of 2 unique contacts resubmitted.
-    expect(segments[0].duplicateRate).toBeCloseTo(0.5, 5);
+    expect(segments[0].n).toBe(4);
   });
 });
 
@@ -210,23 +221,23 @@ describe('leadKey privacy (impl-review ISSUE-1)', () => {
 });
 
 describe('overview metrics', () => {
-  it('reports submissions, unique contacts and attribution coverage', async () => {
+  it('reports total leads and attribution coverage on submissions', async () => {
     const { leads } = await transformRows(readSample());
     const stats = overview(leads);
+    expect(stats.totalLeads).toBe(leads.length);
     expect(stats.totalSubmissions).toBe(leads.length);
-    expect(stats.uniqueContacts).toBe(uniqueContacts(leads).length);
     expect(stats.mqlRate).toBeGreaterThanOrEqual(0);
     expect(stats.mqlRate).toBeLessThanOrEqual(1);
+    expect(stats.mqlCount).toBe(leads.filter((l) => l.tier === 'MQL').length);
     const coverageTotal = stats.attributionCoverage.reduce((sum, row) => sum + row.share, 0);
     expect(coverageTotal).toBeCloseTo(1, 5);
   });
 
   it('produces segment stats whose bucket counts add up to the input size', async () => {
     const { leads } = await transformRows(readSample());
-    const base = leadsForMode(leads, 'unique');
-    for (const segments of [sourceSegments(base), mediumSegments(base), typeCompanySegments(base), geoSegments(base)]) {
+    for (const segments of [sourceSegments(leads), mediumSegments(leads), typeCompanySegments(leads), geoSegments(leads)]) {
       const total = segments.reduce((sum, s) => sum + s.n, 0);
-      expect(total).toBe(base.length);
+      expect(total).toBe(leads.length);
     }
   });
 
@@ -254,18 +265,166 @@ describe('overview metrics', () => {
   });
 });
 
+describe('submissions denominator fixture (hand-computed)', () => {
+  // contactA: lần đầu MQL-grade (Wholesaler + Above $20k + Tradeshow + Ghana
+  // đồng nhất + email/phone hợp lệ + có tên/công ty + UTM đầy đủ ở URL).
+  // Cùng contact gửi lần 2 → isDuplicate, rớt gate về Review (giữ gate).
+  // contactB: budget thấp + Nurture-grade. contactC: email/phone rác → Review.
+  // Kỳ vọng tính tay: 4 lead, MQL = 1 (25%), Review = 2, funnel cộng đủ 4.
+  function fixtureRows(): RawRow[] {
+    const base: RawRow = {
+      submission_date: '1/15/2026 10:00',
+      URL: 'https://shop.example/?utm_source=FixtureSource&utm_medium=Ads',
+      location: 'Ghana',
+      'in-which-country-is-your-business-registered': 'Ghana',
+      'country-to-distribute-products': 'Ghana',
+      'estimated-monthly-amount-dollar-you-wish-to-buy-from-us': 'Above $20,000 - $50,000',
+      'type-company': 'Wholesaler',
+      'how-do-you-know-about-us': 'Tradeshow',
+      Name: 'Adaeze Mensah',
+      Email: 'adaeze.mensah@realtrade.com',
+      'calling-code': '233',
+      Phone: '244123456',
+      Company: 'Accra Wholesale Ltd',
+    };
+    return [
+      { ...base, submission_id: 'fix-1' },
+      { ...base, submission_id: 'fix-2', submission_date: '1/16/2026 10:00' },
+      {
+        ...base,
+        submission_id: 'fix-3',
+        Email: 'kwame.low@realtrade.com',
+        Phone: '244654321',
+        'estimated-monthly-amount-dollar-you-wish-to-buy-from-us': 'Above $5,000 - $20,000',
+        // Hạ điểm về Nurture (20 + 8 + 6 + 10 + 10 = 54): vẫn pass gate, không lên MQL.
+        'type-company': 'Boutique Store',
+        'how-do-you-know-about-us': 'Facebook',
+      },
+      {
+        ...base,
+        submission_id: 'fix-4',
+        Email: 'not-an-email',
+        Phone: '123',
+      },
+    ];
+  }
+
+  it('counts all views from the same hand-computed submissions', async () => {
+    const { leads } = await transformRows(fixtureRows());
+    expect(leads).toHaveLength(4);
+
+    // Dòng đầu MQL, dòng resubmit rớt gate; không suy từ output.
+    expect(leads[0].tier).toBe('MQL');
+    expect(leads[0].isDuplicate).toBe(false);
+    expect(leads[1].isDuplicate).toBe(true);
+    expect(leads[1].tier).toBe('Review');
+
+    const stats = overview(leads);
+    expect(stats.totalLeads).toBe(4);
+    expect(stats.mqlCount).toBe(1);
+    expect(stats.mqlRate).toBeCloseTo(0.25, 10);
+    expect(Object.values(stats.tierCounts).reduce((s, n) => s + n, 0)).toBe(4);
+
+    // Mọi breakdown cộng đủ 4 trên cùng tập submissions sau filter.
+    for (const segments of [sourceSegments(leads), mediumSegments(leads), typeCompanySegments(leads), geoSegments(leads)]) {
+      expect(segments.reduce((s, g) => s + g.n, 0)).toBe(4);
+    }
+    const [all] = groupSegments(leads, () => 'all');
+    expect(all.n).toBe(4);
+    expect(all.mqlRate).toBeCloseTo(0.25, 10);
+
+    // Trend tháng 01 gom đủ 4 submissions, 1 MQL.
+    const january = monthlyTrend(leads).find((t) => t.label === '2026-01');
+    expect(january?.n).toBe(4);
+    expect(january?.mql).toBe(1);
+
+    // Creative đủ ngưỡng hiển thị mặc định (30): 30 submissions cùng term×content.
+    const creativeRows: RawRow[] = Array.from({ length: 30 }, (_, i) => ({
+      submission_id: `creative-${i}`,
+      submission_date: '2/1/2026 10:00',
+      URL: 'https://shop.example/?utm_source=FixtureSource&utm_medium=Ads&utm_term=bulkterm&utm_content=bulkcontent',
+      location: 'Ghana',
+      'in-which-country-is-your-business-registered': 'Ghana',
+      'country-to-distribute-products': 'Ghana',
+      'estimated-monthly-amount-dollar-you-wish-to-buy-from-us': 'Above $20,000 - $50,000',
+      'type-company': 'Wholesaler',
+      'how-do-you-know-about-us': 'Tradeshow',
+      Name: `Bulk Buyer ${i}`,
+      Email: `bulk.buyer.${i}@realtrade.com`,
+      'calling-code': '233',
+      Phone: `2441000${String(i).padStart(2, '0')}`,
+      Company: 'Accra Wholesale Ltd',
+    }));
+    const { leads: creativeLeads } = await transformRows(creativeRows);
+    const [topCell] = creativeMatrix(creativeLeads);
+    expect(topCell.n).toBe(30);
+    expect(topCell.term).toBe('bulkterm');
+
+    // Budget mix + type×budget cộng đủ 4 trên cùng fixture tay.
+    expect(budgetMix(leads).reduce((s, b) => s + b.n, 0)).toBe(4);
+    expect(typeBudgetMatrix(leads).reduce((s, c) => s + c.n, 0)).toBe(4);
+    expect(brandDemand(leads, 1).reduce((s, b) => s + b.n, 0)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('renders every view from the same submissions at the component boundary', async () => {
+    const { leads } = await transformRows(fixtureRows());
+
+    const html = renderToStaticMarkup(createElement(OverviewNew, { leads }));
+    expect(html).toContain('>4<');
+    expect(html).toContain('25.0%');
+    expect(html).not.toMatch(/Contact duy nhất|Nhóm trùng|Trùng |resubmit|gửi lặp|lặp lại/i);
+
+    const acquire = renderToStaticMarkup(createElement(AcquireGroup, { leads }));
+    // Source được normalize lowercase ở data layer — assert đúng hành vi hiện có.
+    expect(acquire).toContain('fixturesource');
+    expect(acquire).not.toMatch(/Trùng |resubmit|gửi lặp|lặp lại/i);
+
+    const quality = renderToStaticMarkup(createElement(QualityGroup, { leads }));
+    expect(quality).toContain('Ghana');
+    expect(quality).not.toMatch(/Trùng |resubmit|gửi lặp|lặp lại/i);
+
+    const trend = renderToStaticMarkup(createElement(TrendModule, { leads }));
+    expect(trend).toContain('Xu hướng theo tháng');
+    expect(trend).not.toMatch(/resubmit/i);
+
+    const explorer = renderToStaticMarkup(
+      createElement(LeadsModule, { leads, drill: null, onClearDrill: () => {}, newIds: new Set<string>() }),
+    );
+    expect(explorer).toContain('fix-1');
+    expect(explorer).toContain('Hiện 4 / 4 dòng');
+    expect(explorer).not.toMatch(/trùng ×|resubmit|gửi lặp|lặp lại/i);
+
+    // Formatter tooltip thật: cohort rỗng hiện 0.0%, không NaN/Infinity.
+    const emptyLabel = makeShareLabel(0);
+    expect(emptyLabel(0)[0]).toBe('0 (0.0%)');
+    const emptyHtml = renderToStaticMarkup(createElement(OverviewNew, { leads: [] }));
+    expect(emptyHtml).not.toMatch(/NaN|Infinity/i);
+  });
+
+  it('renders empty cohort percents without NaN or Infinity', async () => {
+    const stats = overview([]);
+    expect(stats.totalLeads).toBe(0);
+    expect(stats.mqlRate).toBe(0);
+    expect(stats.attributionCoverage).toHaveLength(0);
+    for (const value of [stats.mqlRate, stats.highBudgetRate, stats.trackingCoverage]) {
+      expect(pctOf(0, stats.totalLeads)).toBe('0.0%');
+      expect(String(value)).not.toMatch(/NaN|Infinity/);
+    }
+    expect(pctOf(0, 0)).toBe('0.0%');
+  });
+});
+
 describe('action board', () => {
   it('never recommends Scale for a segment with weak tracking', async () => {
     const { leads } = await transformRows(readSample());
-    const base = leadsForMode(leads, 'unique');
     const items = buildActionBoard({
-      leads: base,
-      sourceSegments: sourceSegments(base),
-      mediumSegments: mediumSegments(base),
-      typeSegments: typeCompanySegments(base),
-      geoSegments: geoSegments(base),
-      termSegments: groupSegments(base, (l) => l.chosenUtm.term || '(no term)'),
-      contentSegments: groupSegments(base, (l) => l.chosenUtm.content || '(no content)'),
+      leads,
+      sourceSegments: sourceSegments(leads),
+      mediumSegments: mediumSegments(leads),
+      typeSegments: typeCompanySegments(leads),
+      geoSegments: geoSegments(leads),
+      termSegments: groupSegments(leads, (l) => l.chosenUtm.term || '(no term)'),
+      contentSegments: groupSegments(leads, (l) => l.chosenUtm.content || '(no content)'),
     });
     for (const item of items) {
       if (item.action === 'Scale') {
@@ -274,5 +433,28 @@ describe('action board', () => {
         expect(item.stats.geoMismatchRate).toBeLessThanOrEqual(0.4);
       }
     }
+  });
+
+  it('cuts a duplicate-heavy segment without revealing the duplicate rate', async () => {
+    const { leads } = await transformRows(readSample());
+    const items = buildActionBoard({
+      leads,
+      sourceSegments: [{ key: 'resubmit-heavy', n: 100, highBudgetRate: 0.5, mqlRate: 0.3, duplicateRate: 0.6, geoMismatchRate: 0, missingTrackingRate: 0, spamRate: 0, confidence: 'high' }],
+      mediumSegments: [],
+      typeSegments: [],
+      geoSegments: [],
+      termSegments: [],
+      contentSegments: [],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].action).toBe('Cut/Exclude');
+    expect(items[0].reason).not.toMatch(/trùng|duplicate|lặp|resubmit|gửi lặp/i);
+  });
+
+  it('empty cohort reports zero leads without crashing', async () => {
+    const stats = overview([]);
+    expect(stats.totalLeads).toBe(0);
+    expect(stats.mqlRate).toBe(0);
+    expect(stats.attributionCoverage).toHaveLength(0);
   });
 });

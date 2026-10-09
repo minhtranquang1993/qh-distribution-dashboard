@@ -245,8 +245,7 @@ export function LeadsModule({
                   <span className="chip bg-slate-800 text-slate-300">{tierLabel(lead.tier).split('—')[0].trim()}</span>
                 </td>
                 <td className="table-cell text-xs text-slate-500">
-                  {lead.duplicateCount > 1 && `trùng ×${lead.duplicateCount}`}
-                  {lead.spamSignals.length > 0 && ` ${lead.spamSignals.join(',')}`}
+                  {lead.spamSignals.length > 0 ? lead.spamSignals.join(',') : '—'}
                 </td>
               </tr>
             ))}

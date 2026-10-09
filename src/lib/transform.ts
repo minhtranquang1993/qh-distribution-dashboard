@@ -76,11 +76,8 @@ export async function transformRows(
   const salt = newKeySalt();
 
   // Pass 1: derive each contact's dedupe key once and count their submissions, so
-  // the surviving representative row carries its final group size. `uniqueContacts`
-  // keeps the *earliest* lead of a repeat group, and that lead is built before the
-  // later submissions are seen — so a single streaming pass leaves its
-  // duplicateCount stuck at 1 and every segment would report a duplicate rate of
-  // 0 in the default denominator.
+  // each lead carries its contact's final submission count for scoring gates.
+  // A single streaming pass would leave duplicateCount stuck at 1.
   const keyCounts = new Map<string, number>();
   const keyByIndex = new Array<string>(rows.length);
   for (let i = 0; i < rows.length; i += 1) {

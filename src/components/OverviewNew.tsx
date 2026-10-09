@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { budgetMix, overview, pct, uniqueContacts } from '@/lib/metrics';
+import { budgetMix, makeShareLabel, overview, pct, pctOf } from '@/lib/metrics';
 import type { Lead } from '@/types/lead';
 import { Card, Stat } from '@/components/ui';
 import { basisLabel, tierLabel } from '@/components/labels';
@@ -30,11 +30,12 @@ const TIER_COLORS: Record<string, string> = {
   Review: '#f59e0b',
 };
 
-/** Tổng quan mới: KPI + funnel MQL + budget mix + attribution (giữ nguyên metrics). */
+/** Tổng quan mới: KPI + funnel MQL + budget mix + attribution (đếm mỗi submission là 1 lead). */
 export function OverviewNew({ leads }: { leads: Lead[] }) {
   const stats = useMemo(() => overview(leads), [leads]);
   const mix = useMemo(() => budgetMix(leads), [leads]);
-  const unique = useMemo(() => uniqueContacts(leads).length, [leads]);
+  const total = stats.totalLeads;
+  const shareLabel = useMemo(() => makeShareLabel(total), [total]);
 
   const funnel = useMemo(
     () =>
@@ -49,9 +50,9 @@ export function OverviewNew({ leads }: { leads: Lead[] }) {
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat
-          label="Contact duy nhất"
-          value={stats.uniqueContacts.toLocaleString('vi-VN')}
-          hint={`${stats.totalSubmissions.toLocaleString('vi-VN')} submissions`}
+          label="Lead"
+          value={stats.totalLeads.toLocaleString('vi-VN')}
+          hint={`${stats.mqlCount.toLocaleString('vi-VN')} MQL`}
         />
         <Stat
           label="MQL rate"
@@ -66,7 +67,7 @@ export function OverviewNew({ leads }: { leads: Lead[] }) {
         <Stat
           label="Tracking coverage"
           value={pct(stats.trackingCoverage)}
-          hint="contact có ít nhất 1 UTM"
+          hint="lead có ít nhất 1 UTM"
         />
       </div>
 
@@ -78,7 +79,7 @@ export function OverviewNew({ leads }: { leads: Lead[] }) {
               <XAxis type="number" tick={{ fill: '#64748b', fontSize: 12 }} />
               <YAxis type="category" dataKey="tier" width={80} tick={{ fill: '#94a3b8', fontSize: 12 }} />
               <Tooltip
-                formatter={(value: number) => [`${value.toLocaleString('vi-VN')} (${pct(value / unique)})`, 'Số lượng']}
+                formatter={shareLabel}
                 contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8 }}
               />
               <Bar dataKey="n" radius={[0, 4, 4, 0]}>
@@ -89,7 +90,7 @@ export function OverviewNew({ leads }: { leads: Lead[] }) {
             </BarChart>
           </ResponsiveContainer>
           <p className="mt-2 text-xs text-slate-500">
-            Trùng {pct(stats.duplicateRate)} · Geo mismatch {pct(stats.geoMismatchRate)} · Spam {pct(stats.spamRate)}
+            Geo mismatch {pct(stats.geoMismatchRate)} · Spam {pct(stats.spamRate)}
           </p>
         </Card>
 
@@ -100,7 +101,7 @@ export function OverviewNew({ leads }: { leads: Lead[] }) {
               <XAxis type="number" tick={{ fill: '#64748b', fontSize: 12 }} />
               <YAxis type="category" dataKey="bucket" width={130} tick={{ fill: '#94a3b8', fontSize: 11 }} />
               <Tooltip
-                formatter={(value: number) => [`${value.toLocaleString('vi-VN')} (${pct(value / unique)})`, 'Số lượng']}
+                formatter={shareLabel}
                 contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8 }}
               />
               <Bar dataKey="n" radius={[0, 4, 4, 0]}>
@@ -130,7 +131,7 @@ export function OverviewNew({ leads }: { leads: Lead[] }) {
                 <div key={tier} className="flex items-center justify-between text-sm">
                   <span className="text-slate-400">{tierLabel(tier)}</span>
                   <span className="tabular-nums text-slate-200">
-                    {count.toLocaleString('vi-VN')} <span className="text-slate-500">({pct(count / unique)})</span>
+                    {count.toLocaleString('vi-VN')} <span className="text-slate-500">({pctOf(count, total)})</span>
                   </span>
                 </div>
               ))}

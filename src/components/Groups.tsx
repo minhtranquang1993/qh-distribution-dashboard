@@ -3,14 +3,13 @@ import {
   brandDemand,
   geoSegments,
   howKnowSegments,
-  leadsForMode,
   mediumSegments,
   pct,
   sourceSegments,
   typeBudgetMatrix,
   typeCompanySegments,
 } from '@/lib/metrics';
-import type { Lead, MetricMode } from '@/types/lead';
+import type { Lead } from '@/types/lead';
 import type { Drill } from '@/lib/drill';
 import { Card } from '@/components/ui';
 import { CreativeTopModule, InsightsModule, SegmentTable } from '@/components/InsightsModule';
@@ -23,15 +22,13 @@ export { TrendModule };
 /** Nhóm Thu hút: Kênh + Creative + Xu hướng (gộp 3 tab cũ). */
 export function AcquireGroup({
   leads,
-  mode,
   onDrill,
 }: {
   leads: Lead[];
-  mode: MetricMode;
   onDrill?: (d: Drill) => void;
 }) {
   const [dimension, setDimension] = useState<'source' | 'medium' | 'howKnow'>('source');
-  const base = useMemo(() => leadsForMode(leads, mode), [leads, mode]);
+  const base = leads;
   const segments = useMemo(() => {
     if (dimension === 'source') return sourceSegments(base);
     if (dimension === 'medium') return mediumSegments(base);
@@ -70,7 +67,7 @@ export function AcquireGroup({
               key: s.key,
               n: s.n,
               mqlRate: s.mqlRate,
-              extra: `trùng ${pct(s.duplicateRate)} · thiếu UTM ${pct(s.missingTrackingRate)}`,
+              extra: `thiếu UTM ${pct(s.missingTrackingRate)}`,
               confidence: s.confidence,
               drill:
                 dimension === 'source'
@@ -84,7 +81,7 @@ export function AcquireGroup({
         <TrendModule leads={leads} />
       </div>
       <div className="space-y-4">
-        <CreativeTopModule leads={leads} mode={mode} onDrill={onDrill} />
+        <CreativeTopModule leads={leads} onDrill={onDrill} />
       </div>
     </div>
   );
@@ -93,14 +90,12 @@ export function AcquireGroup({
 /** Nhóm Chất lượng: Geo + Firmographic + Brand (gộp 3 tab cũ). */
 export function QualityGroup({
   leads,
-  mode,
   onDrill,
 }: {
   leads: Lead[];
-  mode: MetricMode;
   onDrill?: (d: Drill) => void;
 }) {
-  const base = useMemo(() => leadsForMode(leads, mode), [leads, mode]);
+  const base = leads;
   const geo = useMemo(() => geoSegments(base).slice(0, 10), [base]);
   const types = useMemo(() => typeCompanySegments(base).slice(0, 8), [base]);
   const matrix = useMemo(() => typeBudgetMatrix(base).slice(0, 8), [base]);
@@ -171,18 +166,16 @@ export function QualityGroup({
 
 export function OverviewTab({
   leads,
-  mode,
   onDrill,
   filteredNote,
 }: {
   leads: Lead[];
-  mode: MetricMode;
   onDrill?: (d: Drill) => void;
   filteredNote?: string;
 }) {
   return (
     <div className="space-y-4">
-      <InsightsModule leads={leads} mode={mode} onDrill={onDrill} filteredNote={filteredNote} />
+      <InsightsModule leads={leads} onDrill={onDrill} filteredNote={filteredNote} />
     </div>
   );
 }

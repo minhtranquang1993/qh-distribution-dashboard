@@ -9,7 +9,6 @@ import { LeadsModule } from '@/components/LeadsModule';
 import { FilterBar } from '@/components/FilterBar';
 import { applyFilters, EMPTY_FILTER, isFiltered, type CohortFilter } from '@/lib/cohort';
 import type { Drill } from '@/lib/drill';
-import type { MetricMode } from '@/types/lead';
 
 const TABS = [
   { key: 'overview', label: 'Tổng quan' },
@@ -20,34 +19,9 @@ const TABS = [
 
 type TabKey = (typeof TABS)[number]['key'];
 
-function ModeToggle({ mode, onChange }: { mode: MetricMode; onChange: (m: MetricMode) => void }) {
-  const options: Array<{ key: MetricMode; label: string; title: string }> = [
-    { key: 'unique', label: 'Contact duy nhất', title: 'Mặc định: mỗi contact tính 1 lần' },
-    { key: 'raw', label: 'Tất cả submissions', title: 'Đo lưu lượng form' },
-    { key: 'dupe_groups', label: 'Nhóm trùng', title: 'Đo lạm phát trùng lặp' },
-  ];
-  return (
-    <div className="flex gap-1">
-      {options.map((opt) => (
-        <button
-          key={opt.key}
-          title={opt.title}
-          onClick={() => onChange(opt.key)}
-          className={`chip ${
-            mode === opt.key ? 'bg-sky-500/20 text-sky-300' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-          }`}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 export default function App() {
   const data = useDataSource();
   const [tab, setTab] = useState<TabKey>('overview');
-  const [mode, setMode] = useState<MetricMode>('unique');
   const [filter, setFilter] = useState<CohortFilter>(EMPTY_FILTER);
   const [drill, setDrill] = useState<Drill | null>(null);
 
@@ -78,7 +52,6 @@ export default function App() {
             khi có dữ liệu chi phí ads, các segment sẽ chuyển từ quyết định chờ sang quyết định scale.
           </p>
         </div>
-        {showDashboard && <ModeToggle mode={mode} onChange={setMode} />}
       </header>
 
       <div className="space-y-4">
@@ -221,18 +194,18 @@ export default function App() {
             </nav>
 
             <p className="text-xs text-slate-600">
-              Mặc định mọi phân tích dùng contact duy nhất, không tính lead gửi trùng. Bấm vào bất kỳ
+              Mọi phân tích đếm mỗi submission là 1 lead. Bấm vào bất kỳ
               segment nào để xem lead mẫu ở tab Leads.
             </p>
 
             {tab === 'overview' && (
               <div className="space-y-4">
                 <OverviewNew leads={filtered} />
-                <OverviewTab leads={filtered} mode={mode} onDrill={handleDrill} filteredNote={filteredNote} />
+                <OverviewTab leads={filtered} onDrill={handleDrill} filteredNote={filteredNote} />
               </div>
             )}
-            {tab === 'acquire' && <AcquireGroup leads={filtered} mode={mode} onDrill={handleDrill} />}
-            {tab === 'quality' && <QualityGroup leads={filtered} mode={mode} onDrill={handleDrill} />}
+            {tab === 'acquire' && <AcquireGroup leads={filtered} onDrill={handleDrill} />}
+            {tab === 'quality' && <QualityGroup leads={filtered} onDrill={handleDrill} />}
             {tab === 'leads' && (
               <LeadsModule leads={filtered} drill={drill} onClearDrill={() => setDrill(null)} newIds={data.newIds} />
             )}

@@ -8,7 +8,7 @@ export function TrendModule({ leads }: { leads: Lead[] }) {
   const trend = useMemo(() => monthlyTrend(leads), [leads]);
 
   return (
-    <Card title="Xu hướng theo tháng — phát hiện resubmit">
+    <Card title="Xu hướng theo tháng">
       <ResponsiveContainer width="100%" height={260}>
         <AreaChart data={trend} margin={{ left: 0, right: 16 }}>
           <defs>

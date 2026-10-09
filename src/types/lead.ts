@@ -19,9 +19,6 @@ export type LeadTier = (typeof LEAD_TIERS)[number];
 export const ATTRIBUTION_BASES = ['submit_url', 'first_source_fallback', 'unknown'] as const;
 export type AttributionBasis = (typeof ATTRIBUTION_BASES)[number];
 
-export const METRIC_MODES = ['raw', 'unique', 'dupe_groups'] as const;
-export type MetricMode = (typeof METRIC_MODES)[number];
-
 /** A single normalized lead. PII fields are omitted in the public-safe build. */
 export interface Lead {
   submissionId: string;
